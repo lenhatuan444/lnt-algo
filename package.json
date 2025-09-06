@@ -1,0 +1,23 @@
+{
+  "name": "crypto-4h-scheduler",
+  "version": "1.0.0",
+  "description": "Runs at each 4h candle close and prints close prices for configured symbols via ccxt.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ccxt": "^4.4.61",
+    "dotenv": "^16.4.5",
+    "envalid": "^8.0.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
