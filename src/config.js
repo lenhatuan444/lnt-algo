@@ -47,6 +47,13 @@ const env = {
 
   EQUITY: toNum(process.env.EQUITY, 10000),
   SLIPPAGE_BPS: toNum(process.env.SLIPPAGE_BPS, 5),
+
+  // API server config
+  API_PORT: toNum(process.env.API_PORT, 8080),
+  BACKTEST_DIR: process.env.BACKTEST_DIR || 'backtest_outputs',
+  CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
+  API_DEFAULT_LIMIT: toNum(process.env.API_DEFAULT_LIMIT, 100),
+  API_MAX_LIMIT: toNum(process.env.API_MAX_LIMIT, 1000),
 };
 
 const SYMBOLS_ARR = env.SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);

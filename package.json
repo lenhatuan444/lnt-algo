@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "scheduler": "node src/index.js",
-    "backtest": "node src/backtest.js --symbol BTC/USDT --from 2024-01-01 --to 2025-09-01 --exchange binance --timeframe 4h --equity 10000 --risk 1 --slipbps 5"
+    "backtest": "node src/backtest.js --symbol BTC/USDT --from 2024-01-01 --to 2025-09-01 --exchange binance --timeframe 4h --equity 10000 --risk 1 --slipbps 5",
+    "api": "node src/api_server.js",
+    "all": "node src/start_all.js"
   },
   "dependencies": {
     "ccxt": "^4.3.50",
