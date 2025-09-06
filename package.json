@@ -1,23 +1,18 @@
 {
-  "name": "crypto-4h-scheduler",
+  "name": "crypto-4h-bot",
   "version": "1.0.0",
-  "description": "Runs at each 4h candle close and prints close prices for configured symbols via ccxt.",
-  "main": "src/index.js",
+  "description": "4h crypto scanner + trading bot + backtester (EMA1D + VWAP + MACD + ATR)",
   "type": "commonjs",
+  "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "scheduler": "node src/index.js",
+    "backtest": "node src/backtest.js --symbol BTC/USDT --from 2024-01-01 --to 2025-09-01 --exchange binance --timeframe 4h --equity 10000 --risk 1 --slipbps 5"
   },
   "dependencies": {
-    "ccxt": "^4.4.61",
+    "ccxt": "^4.3.50",
     "dotenv": "^16.4.5",
-    "envalid": "^8.0.0",
-    "node-cron": "^3.0.3"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
+    "node-cron": "^3.0.3",
+    "xlsx": "^0.18.5"
   }
 }

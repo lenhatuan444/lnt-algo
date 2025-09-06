@@ -1,5 +1,3 @@
-// src/index.js
+require('dotenv').config();
 const { schedule } = require('./scheduler');
-
-// Kick off the scheduler
 schedule();

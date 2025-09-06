@@ -1,40 +1,47 @@
-# crypto-4h-scheduler
+# Crypto 4H Bot (EMA1D + VWAP + MACD + ATR)
 
-Runs **exactly at each 4-hour candle close** and prints the just-closed 4h close price for your configured symbols using **ccxt**.
+Scanner 4H + Trading bot (optional) + Backtester (xuất Excel).
 
-## Quick start
+## Cài đặt
 
 ```bash
-# Node.js 18+
 npm i
-
-# Copy env template and edit as you like
+# hoặc
+npm i ccxt dotenv node-cron xlsx
 cp .env.example .env
-
-# Start
-npm start
 ```
 
-## Configure
+Điền API key nếu bật trade.
 
-Edit `.env`:
-
-- `EXCHANGE_ID` — ccxt exchange id (default: `binance`)
-- `SYMBOLS` — comma-separated list like `BTC/USDT,ETH/USDT,SOL/USDT`
-- `TIMEFRAME` — default `4h`
-- `POST_CLOSE_DELAY_SEC` — small buffer to avoid race at candle rollover
-- `CRON_EXPRESSION` — default `0 0 */4 * * *` (00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
-- `CRON_TZ` — cron timezone (e.g., `UTC` or `Asia/Ho_Chi_Minh`)
-- `RUN_ON_START` — run once immediately on start
-- `LOG_JSON` — switch to JSON lines for easier log parsing
-
-## Dev mode (optional)
+## Scheduler (quét nến 4h + tín hiệu + (tuỳ chọn) đặt lệnh)
 
 ```bash
-npm run dev
+npm run scheduler
 ```
 
-## Notes
+- `TRADE_ENABLED=false` → chỉ log tín hiệu, **không** đặt lệnh.
+- `TRADE_ENABLED=true` → đặt lệnh futures (USDT-M) với SL/TP1/TP2.
 
-- We take the **penultimate** candle from `fetchOHLCV` as the just-closed candle.
-- Keep `CRON_TZ=UTC` if you want to fire at exchange-aligned UTC 4h boundaries.
+## Backtest (xuất Excel)
+
+```bash
+npm run backtest
+# hoặc:
+node src/backtest.js --symbol BTC/USDT --from 2024-01-01 --to 2025-09-01   --exchange binance --timeframe 4h --equity 10000 --risk 1 --slipbps 5
+```
+
+Kết quả: `backtest_outputs/` (Excel `trades`, `equity_curve`, `summary`).
+
+## Cấu trúc
+
+```
+src/
+  backtest.js
+  bot.js
+  config.js
+  indicators.js
+  scheduler.js
+  strategy.js
+  trader.js
+  index.js
+```
