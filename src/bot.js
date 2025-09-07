@@ -24,6 +24,7 @@ const paperStore = require('./paper_store');
 async function fetchBars(exchange, symbol, timeframe, limit = 250) {
   return await exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
 }
+
 function initPaper(state) {
   state.paper = state.paper || {
     equity: Number.isFinite(env.EQUITY) ? Number(env.EQUITY) : 10000,
@@ -32,12 +33,17 @@ function initPaper(state) {
   };
   return state.paper;
 }
-function nowISO(ts) { return new Date(ts ?? Date.now()).toISOString().replace('T', ' ').replace('Z', ''); }
+
+function nowISO(ts) {
+  return new Date(ts ?? Date.now()).toISOString().replace('T', ' ').replace('Z', '');
+}
+
 function applySlip(price, side, slipBps, { forEntry = false } = {}) {
   const slip = Math.max(0, Number(slipBps) || 0) / 10000;
   if (forEntry) return side === 'buy' ? price * (1 + slip) : price * (1 - slip);
   return side === 'buy' ? price * (1 - slip) : price * (1 + slip);
 }
+
 function genPosId(symbol) {
   return `P-${symbol.replace(/[^A-Z0-9]/gi,'')}-${Date.now()}-${Math.floor(Math.random()*1e6)}`;
 }
@@ -47,7 +53,6 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
   const [ts, _o, high, low] = bar;
   const events = [];
   const remainPositions = [];
-  let closedSomething = false;
 
   for (const p of paper.positions) {
     if (p.symbol !== symbol) { remainPositions.push(p); continue; }
@@ -55,7 +60,6 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
     let remainingQty = p.qty;
     let realized = 0;
     const sideSign = p.side === 'buy' ? 1 : -1;
-    const hits = [];
     const localExits = [];
 
     const exitFrac = (fraction, pxPlan, label, pxEffSide) => {
@@ -64,9 +68,9 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       const pnlDelta = sideSign * (pxEff - p.entryExec) * fillQty;
       realized += pnlDelta;
       remainingQty -= fillQty;
-      hits.push(label);
       localExits.push({ fraction, price: pxEff, label });
 
+      // log partial exit
       paperStore.addExit({
         posId: p.posId,
         symbol: p.symbol,
@@ -113,7 +117,9 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       p.qty = remainingQty;
       remainPositions.push(p);
     } else {
+      // fully closed -> realize PnL to equity, record trade
       paper.equity += realized;
+
       const closedFrac = localExits.reduce((s, e) => s + e.fraction, 0);
       const exitAvg = closedFrac > 0
         ? localExits.reduce((s, e) => s + e.price * e.fraction, 0) / closedFrac
@@ -253,9 +259,7 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
   }
 
   paper.positions = remainPositions;
-  if (events.length) {
-    // equity point only when fully closed is handled inside trade add
-  }
+  // equity point khi đóng lệnh đã được paper_store.addTrade() xử lý
   return events;
 }
 
@@ -290,6 +294,7 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
   paper.positions.push(pos);
 
   try {
+    // 1) Lưu log entry
     paperStore.addEntry({
       posId,
       symbol,
@@ -303,8 +308,21 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
       slipBps: Number(env.SLIPPAGE_BPS || 0),
       reason: Array.isArray(sig.reason) ? sig.reason.join('|') : (sig.reason || '')
     });
+
+    // 2) Lưu snapshot positions ngay khi vào lệnh (CSV + Mongo nếu bật)
+    paperStore.addPositionSnapshot({
+      time: pos.openedAt,
+      posId,
+      symbol: pos.symbol,
+      side: pos.side,
+      qty: pos.qty,
+      entryExec: +pos.entryExec.toFixed(6),
+      stop: pos.stop,
+      tp1: pos.tp1,
+      tp2: pos.tp2
+    });
   } catch (e) {
-    console.error('paperStore.addEntry error:', e.message);
+    console.error('paperStore entry/snapshot error:', e.message);
   }
 
   return { opened: true, ...pos, reason: sig.reason };
@@ -342,10 +360,10 @@ async function processSymbol(exchange, symbol) {
 
   if (env.TRADE_ENABLED) {
     // Live: place bracket
-    if (!sig.side) { await saveState(state); return { symbol, skipped: true, reason: sig.reason?.join(',') || 'no-signal' }; }
+    if (!sig.side) { await saveState(state); return { symbol, skipped: true, reason: Array.isArray(sig.reason) ? sig.reason : (sig.reason ? [sig.reason] : []) }; }
     const equity = await fetchEquityUSDT(exchange);
     const qty = calcQty({ riskPct: env.RISK_PCT, equityUSDT: equity, entry: sig.entry, stop: sig.stop, market });
-    if (!qty || qty <= 0) { await saveState(state); return { symbol, skipped: true, reason: 'qty-zero', plan: sig }; }
+    if (!qty || qty <= 0) { await saveState(state); return { symbol, skipped: true, reason: ['qty-zero'], plan: sig }; }
 
     await setLeverage(exchange, symbol, env.LEVERAGE);
     const entryOrder = await placeBracketOrders(exchange, symbol, sig.side, qty, sig.entry, sig.stop, sig.tp1, sig.tp2);
@@ -354,7 +372,8 @@ async function processSymbol(exchange, symbol) {
     return {
       symbol, placed: true, side: sig.side, qty,
       entry: sig.entry, stop: sig.stop, tp1: sig.tp1, tp2: sig.tp2,
-      orderId: entryOrder?.id, reason: sig.reason
+      orderId: entryOrder?.id,
+      reason: Array.isArray(sig.reason) ? sig.reason : (sig.reason ? [sig.reason] : [])
     };
   } else {
     let openRes = null;
@@ -374,7 +393,9 @@ async function processSymbol(exchange, symbol) {
     }
     return {
       symbol, simulated: true,
-      reason: sig.side ? (openRes?.reason || 'paper-open-skipped') : (sig.reason?.join(',') || 'no-signal'),
+      reason: sig.side
+        ? (openRes?.reason || 'paper-open-skipped')
+        : (Array.isArray(sig.reason) ? sig.reason.join(',') : (sig.reason || 'no-signal')),
       equity: +paper.equity.toFixed(6)
     };
   }
