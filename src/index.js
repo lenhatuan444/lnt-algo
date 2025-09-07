@@ -1,19 +1,10 @@
-// src/index.js
-require('dotenv').config();
-
+// Start API + Scheduler + Realtime watcher in one process
 const { schedule } = require('./scheduler');
-const { env } = require('./config');
+const { startRealtimePaperWatcher } = require('./realtime_paper');
+require('./api_server'); // starts server
 
-// Start API server
-require('./api_server');
-
-// Start 4h scheduler
+console.log('[index] starting scheduler...');
 schedule();
 
-// Optional: Real-time paper watcher (polling)
-if (String(env.PAPER_REALTIME || '0') === '1') {
-  const { startRealtimePaperWatcher } = require('./realtime_paper');
-  startRealtimePaperWatcher().catch(err => {
-    console.error('[rt] watcher failed:', err);
-  });
-}
+console.log('[index] starting realtime watcher (if enabled)...');
+startRealtimePaperWatcher();

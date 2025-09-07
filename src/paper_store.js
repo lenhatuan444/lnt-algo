@@ -1,7 +1,6 @@
-// src/paper_store.js
 const fs = require('fs');
 const path = require('path');
-const { env } = require('./config');
+const { env, STRATEGY, sanitizeSid, fileFor } = require('./config');
 
 let mongo = null;
 if (env.MONGO_ENABLE) {
@@ -10,19 +9,12 @@ if (env.MONGO_ENABLE) {
 
 const PAPER_DIR = process.env.PAPER_DIR || path.join(process.cwd(), 'paper_outputs');
 
-// Cho phép mirror CSV khi dùng Mongo nếu cần
-const CSV_MIRROR_FLAG = String(process.env.PAPER_CSV_MIRROR ?? env.PAPER_CSV_MIRROR ?? '0').toLowerCase();
-const CSV_MIRROR = ['1','true','yes','on'].includes(CSV_MIRROR_FLAG);
-
-// Nếu bật Mongo thì mặc định KHÔNG ghi CSV (trừ khi CSV_MIRROR=1)
-const WRITE_CSV = !env.MONGO_ENABLE || CSV_MIRROR;
-
 function ensureDir() {
   if (!fs.existsSync(PAPER_DIR)) fs.mkdirSync(PAPER_DIR, { recursive: true });
 }
 
 function appendCSV(filename, row, headerOrder) {
-  if (!WRITE_CSV) return; // skip ghi CSV khi đang dùng Mongo (và không mirror)
+  if (env.MONGO_ENABLE && env.MONGO_NO_CSV) return; // only mongo
   ensureDir();
   const p = path.join(PAPER_DIR, filename);
   const exists = fs.existsSync(p);
@@ -42,105 +34,112 @@ function parseTs(val) {
 }
 
 /* ============ Entries (open) ============ */
-async function addEntry(open) {
+async function addEntry(open, sid=STRATEGY) {
+  sid = sanitizeSid(sid);
   const entryTs = parseTs(open.entryTime);
   const doc = {
+    strategy: sid,
     ...open,
     entryTs,
     createdAt: new Date(entryTs),
   };
 
-  appendCSV('paper_entries.csv', doc, [
+  appendCSV(fileFor('entries', sid), doc, [
     'posId','symbol','timeframe','side',
     'entryTime','entryTs','entryPlan','entryExec','qty',
-    'equityBefore','slipBps','reason'
+    'equityBefore','slipBps','reason','strategy'
   ]);
 
   if (env.MONGO_ENABLE && mongo) {
     try {
-      const coll = await mongo.getColl(env.MONGO_COLL_ENTRIES);
+      const coll = await mongo.getColl('entries', sid);
       await coll.insertOne(doc);
     } catch (e) { console.error('[mongo] addEntry err:', e.message); }
   }
 }
 
 /* ============ Partial exits (TP1/TP2/SL/BE) ============ */
-async function addExit(ev) {
+async function addExit(ev, sid=STRATEGY) {
+  sid = sanitizeSid(sid);
   const exitTs = parseTs(ev.exitTime);
   const doc = {
+    strategy: sid,
     ...ev,
     exitTs,
     createdAt: new Date(exitTs),
   };
 
-  appendCSV('paper_exits.csv', doc, [
+  appendCSV(fileFor('exits', sid), doc, [
     'posId','symbol','timeframe','side',
     'label','fraction','price','qty','pnlDelta',
-    'entryExec','entryTime','exitTime','exitTs','equityAfter','slipBps'
+    'entryExec','entryTime','exitTime','exitTs','equityAfter','slipBps','strategy'
   ]);
 
   if (env.MONGO_ENABLE && mongo) {
     try {
-      const coll = await mongo.getColl(env.MONGO_COLL_EXITS);
+      const coll = await mongo.getColl('exits', sid);
       await coll.insertOne(doc);
     } catch (e) { console.error('[mongo] addExit err:', e.message); }
   }
 }
 
 /* ============ Closed trades (fully closed positions) ============ */
-async function addTrade(trade) {
+async function addTrade(trade, sid=STRATEGY) {
+  sid = sanitizeSid(sid);
   const entryTs = parseTs(trade.entryTime);
   const exitTs  = parseTs(trade.exitTime);
   const doc = {
+    strategy: sid,
     ...trade,
     entryTs,
     exitTs,
     createdAt: new Date(exitTs || entryTs),
   };
 
-  appendCSV('paper_trades.csv', doc, [
+  appendCSV(fileFor('trades', sid), doc, [
     'posId','symbol','timeframe','side',
     'entryTime','entryTs','entryPlan','entryExec',
     'exitTime','exitTs','exitAvg','qty','pnl','hits',
-    'equityAfter','slipBps'
+    'equityAfter','slipBps','strategy'
   ]);
 
   if (env.MONGO_ENABLE && mongo) {
     try {
-      const coll = await mongo.getColl(env.MONGO_COLL_TRADES);
+      const coll = await mongo.getColl('trades', sid);
       await coll.insertOne(doc);
     } catch (e) { console.error('[mongo] addTrade err:', e.message); }
   }
 
-  // Ghi điểm equity tại thời điểm đóng lệnh (nếu có)
+  // Also append an equity point at trade close (only when provided)
   if (trade.equityAfter != null) {
-    await addEquityPoint({ time: trade.exitTime, equity: trade.equityAfter });
+    await addEquityPoint({ time: trade.exitTime, equity: trade.equityAfter }, sid);
   }
 }
 
 /* ============ Equity curve points ============ */
-async function addEquityPoint(point) {
-  // Chấp nhận ISO string hoặc epoch; với CSV lưu nguyên vẹn field 'time'
+async function addEquityPoint(point, sid=STRATEGY) {
+  sid = sanitizeSid(sid);
   const timeTs = parseTs(point.time);
-  const csvDoc = { time: point.time, equity: point.equity };
-  appendCSV('paper_equity.csv', csvDoc, ['time','equity']);
+  const csvDoc = { time: point.time, equity: point.equity, strategy: sid };
+  appendCSV(fileFor('equity', sid), csvDoc, ['time','equity','strategy']);
 
   if (env.MONGO_ENABLE && mongo) {
     try {
-      const coll = await mongo.getColl(env.MONGO_COLL_EQUITY);
+      const coll = await mongo.getColl('equity', sid);
       await coll.insertOne({ ...csvDoc, timeTs, createdAt: new Date(timeTs) });
     } catch (e) { console.error('[mongo] addEquityPoint err:', e.message); }
   }
 }
 
 /* ============ Position snapshots (optional) ============ */
-async function addPositionSnapshot(pos) {
-  const doc = { ...pos, snapshotTs: Date.now() };
-  appendCSV('paper_positions.csv', doc, ['time','symbol','side','qty','entryExec','stop','tp1','tp2','snapshotTs']);
+async function addPositionSnapshot(pos, sid=STRATEGY) {
+  sid = sanitizeSid(sid);
+  const doc = { ...pos, snapshotTs: Date.now(), strategy: sid };
+  appendCSV(fileFor('positions', sid), doc, ['time','symbol','side','qty','entryExec','stop','tp1','tp2','snapshotTs','strategy']);
 
   if (env.MONGO_ENABLE && mongo) {
     try {
-      const coll = await mongo.getColl(env.MONGO_COLL_POSITIONS);
+      const coll = await mongo.getColl('positions', sid);
       await coll.insertOne({ ...doc, createdAt: new Date() });
     } catch (e) { console.error('[mongo] addPositionSnapshot err:', e.message); }
   }

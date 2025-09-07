@@ -1,76 +1,90 @@
-// src/config.js
 require('dotenv').config();
 
-function parseList(str, sep = ',') {
-  return String(str || '')
-    .split(sep)
-    .map(s => s.trim())
-    .filter(Boolean);
+function bool(v, d=false){ if (v==null) return d; const s=String(v).trim().toLowerCase(); return ['1','true','yes','y','on'].includes(s); }
+function num(v, d=0){ const n=Number(v); return Number.isFinite(n)?n:d; }
+
+function sanitizeSid(s){
+  const sid = (s || process.env.STRATEGY || 'default').toString().trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return sid || 'default';
 }
 
-const env = {
-  // ===== MongoDB =====
-  MONGO_ENABLE: String(process.env.MONGO_ENABLE || '0') === '1',
-  MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017',
-  MONGO_DB: process.env.MONGO_DB || 'lnt_algo',
-  MONGO_COLL_ENTRIES: process.env.MONGO_COLL_ENTRIES || 'paper_entries',
-  MONGO_COLL_EXITS: process.env.MONGO_COLL_EXITS || 'paper_exits',
-  MONGO_COLL_TRADES: process.env.MONGO_COLL_TRADES || 'paper_trades',
-  MONGO_COLL_EQUITY: process.env.MONGO_COLL_EQUITY || 'paper_equity',
-  MONGO_COLL_POSITIONS: process.env.MONGO_COLL_POSITIONS || 'paper_positions',
-  MONGO_COLL_STATE: process.env.MONGO_COLL_STATE || 'bot_state',
+const STRATEGY = sanitizeSid(process.env.STRATEGY);
+const STRATEGIES_ARR = (process.env.STRATEGIES || STRATEGY).split(',').map(s => sanitizeSid(s)).filter(Boolean);
 
-  // General
+const env = {
   EXCHANGE_ID: process.env.EXCHANGE_ID || 'binanceusdm',
-  QUOTE: process.env.QUOTE || 'USDT',
+  API_KEY: process.env.API_KEY || '',
+  API_SECRET: process.env.API_SECRET || '',
   TIMEFRAME: process.env.TIMEFRAME || '4h',
-  CRON_EXPRESSION: process.env.CRON_EXPRESSION || '5 */4 * * *', // 4h+5m
+  QUOTE: process.env.QUOTE || 'USDT',
+  SYMBOLS: process.env.SYMBOLS || 'BTC/USDT,ETH/USDT,SOL/USDT',
+  CONCURRENCY: num(process.env.CONCURRENCY, 3),
+  RETRIES: num(process.env.RETRIES, 2),
+  RISK_PCT: num(process.env.RISK_PCT, 1.0),
+  LEVERAGE: num(process.env.LEVERAGE, 5),
+  EQUITY: num(process.env.EQUITY, 10000),
+  SLIPPAGE_BPS: num(process.env.SLIPPAGE_BPS, 10),
+  CRON_EXPRESSION: process.env.CRON_EXPRESSION || '1 */4 * * *',
   CRON_TZ: process.env.CRON_TZ || 'UTC',
   LOG_TZ: process.env.LOG_TZ || 'Asia/Ho_Chi_Minh',
-  RUN_ON_START: String(process.env.RUN_ON_START || '1') === '1',
-  POST_CLOSE_DELAY_SEC: Number(process.env.POST_CLOSE_DELAY_SEC || 5),
+  RUN_ON_START: bool(process.env.RUN_ON_START, true),
+  AUTOPICK_TOP: num(process.env.AUTOPICK_TOP, 0),
 
-  // Trading settings
-  TRADE_ENABLED: String(process.env.TRADE_ENABLED || 'false').toLowerCase() === 'true',
-  LEVERAGE: Number(process.env.LEVERAGE || 2),
-  RISK_PCT: Number(process.env.RISK_PCT || 1),
-  SLIPPAGE_BPS: Number(process.env.SLIPPAGE_BPS || 0),
-  EQUITY: Number(process.env.EQUITY || 10000),
-
-  // Concurrency / retry
-  CONCURRENCY: Math.max(1, Number(process.env.CONCURRENCY || 4)),
-  RETRIES: Math.max(0, Number(process.env.RETRIES || 2)),
-
-  // Autopick
-  AUTOPICK_TOP: Number(process.env.AUTOPICK_TOP || 0),
-
-  // Logging
-  LOG_JSON: String(process.env.LOG_JSON || '0') === '1',
+  // Realtime watcher
+  PAPER_REALTIME: bool(process.env.PAPER_REALTIME, false),
+  RT_POLL_MS: num(process.env.RT_POLL_MS, 5000),
+  RT_WATCH_MODE: (process.env.RT_WATCH_MODE || 'active-only').toLowerCase(), // active-only | manual | all-active+manual
 
   // API
-  API_PORT: Number(process.env.API_PORT || 8080),
+  API_PORT: num(process.env.API_PORT, 8080),
   BACKTEST_DIR: process.env.BACKTEST_DIR,
   CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
-  API_DEFAULT_LIMIT: Number(process.env.API_DEFAULT_LIMIT || 100),
-  API_MAX_LIMIT: Number(process.env.API_MAX_LIMIT || 1000),
+  API_DEFAULT_LIMIT: num(process.env.API_DEFAULT_LIMIT, 100),
+  API_MAX_LIMIT: num(process.env.API_MAX_LIMIT, 1000),
 
-  // Strategy selection
-  STRATEGY: process.env.STRATEGY || 'default',
-  DONCHIAN_LEN: Number(process.env.DONCHIAN_LEN || 55),
-  ATR_LEN: Number(process.env.ATR_LEN || 14),
-  ATR_MULT: Number(process.env.ATR_MULT || 2),
-  TP1_RR: Number(process.env.TP1_RR || 1),
-  TP2_RR: Number(process.env.TP2_RR || 2),
+  // Mongo
+  MONGO_ENABLE: bool(process.env.MONGO_ENABLE, false),
+  MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017',
+  MONGO_DB: process.env.MONGO_DB || 'lnt_algo',
+  MONGO_NO_CSV: bool(process.env.MONGO_NO_CSV, false),
 
-  // Real-time paper exits
-  PAPER_REALTIME: Number(process.env.PAPER_REALTIME || 0),
-  RT_POLL_MS: Math.max(200, Number(process.env.RT_POLL_MS || 1000)),
-
-  // Keys (optional for live)
-  API_KEY: process.env.API_KEY,
-  API_SECRET: process.env.API_SECRET,
+  // Base names for collections
+  MONGO_COLL_ENTRIES_BASE: process.env.MONGO_COLL_ENTRIES_BASE || 'paper_entries',
+  MONGO_COLL_EXITS_BASE: process.env.MONGO_COLL_EXITS_BASE || 'paper_exits',
+  MONGO_COLL_TRADES_BASE: process.env.MONGO_COLL_TRADES_BASE || 'paper_trades',
+  MONGO_COLL_EQUITY_BASE: process.env.MONGO_COLL_EQUITY_BASE || 'paper_equity',
+  MONGO_COLL_POSITIONS_BASE: process.env.MONGO_COLL_POSITIONS_BASE || 'paper_positions',
+  MONGO_COLL_STATE_BASE: process.env.MONGO_COLL_STATE_BASE || 'bot_state',
 };
 
-const SYMBOLS_ARR = parseList(process.env.SYMBOLS || 'BTC/USDT,ETH/USDT,SOL/USDT');
+const SYMBOLS_ARR = env.SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
 
-module.exports = { env, SYMBOLS_ARR };
+function collFor(base, sid){
+  const s = sanitizeSid(sid);
+  switch(base){
+    case 'entries': return `${env.MONGO_COLL_ENTRIES_BASE}__${s}`;
+    case 'exits': return `${env.MONGO_COLL_EXITS_BASE}__${s}`;
+    case 'trades': return `${env.MONGO_COLL_TRADES_BASE}__${s}`;
+    case 'equity': return `${env.MONGO_COLL_EQUITY_BASE}__${s}`;
+    case 'positions': return `${env.MONGO_COLL_POSITIONS_BASE}__${s}`;
+    case 'state': return `${env.MONGO_COLL_STATE_BASE}__${s}`;
+    default: return `${base}__${s}`;
+  }
+}
+
+function fileFor(kind, sid) {
+  const s = sanitizeSid(sid);
+  const prefix = `${s}_`;
+  switch(kind){
+    case 'entries': return prefix + 'paper_entries.csv';
+    case 'exits': return prefix + 'paper_exits.csv';
+    case 'trades': return prefix + 'paper_trades.csv';
+    case 'equity': return prefix + 'paper_equity.csv';
+    case 'positions': return prefix + 'paper_positions.csv';
+    case 'state': return `bot_state__${s}.json`;
+    case 'rtwatch': return `rt_watch__${s}.json`;
+    default: return prefix + `${kind}.csv`;
+  }
+}
+
+module.exports = { env, SYMBOLS_ARR, STRATEGY, STRATEGIES_ARR, sanitizeSid, collFor, fileFor };

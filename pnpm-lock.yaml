@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       ccxt:
-        specifier: ^4.3.80
+        specifier: ^4.3.81
         version: 4.5.3
       cors:
         specifier: ^2.8.5
@@ -21,7 +21,7 @@ importers:
         specifier: ^5.1.0
         version: 5.1.0
       mongodb:
-        specifier: ^6.8.0
+        specifier: ^6.7.0
         version: 6.19.0
       node-cron:
         specifier: ^3.0.3

@@ -1,10 +1,9 @@
-// src/realtime_paper.js
 const ccxt = require('ccxt');
-const { env, SYMBOLS_ARR } = require('./config');
+const { env } = require('./config');
 const { normalizeSymbolList } = require('./market_utils');
 const { processRealtimeTick } = require('./bot');
 const { loadState } = require('./state_store');
-const watch = require('./rt_watch_store');
+const watch = require('./rt_watch');
 
 function tz(ts = Date.now(), tz = env.LOG_TZ) {
   const d = new Date(ts);
@@ -12,34 +11,32 @@ function tz(ts = Date.now(), tz = env.LOG_TZ) {
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-const REFRESH_ACTIVE_MS = Number(env.RT_REFRESH_ACTIVE_MS || 5000);
-
 async function getPrice(exchange, symbol) {
   try {
     const t = await exchange.fetchTicker(symbol);
     return Number(t.mark ?? t.last ?? t.close ?? t.info?.markPrice ?? t.info?.lastPrice);
-  } catch (_) {
+  } catch (e) {
     return null;
   }
 }
 
-async function getActiveSymbols(exchange) {
-  const state = await loadState();
-  const positions = state?.paper?.positions || [];
-  const raw = positions
-    .filter(p => Number(p?.qty) > 0 && p?.symbol)
-    .map(p => String(p.symbol));
-  if (!raw.length) return [];
-  const normalized = normalizeSymbolList(exchange, raw);
-  return Array.from(new Set(normalized.filter(Boolean)));
+async function currentActiveSymbolsFromState() {
+  try {
+    const state = await loadState();
+    const pos = state?.paper?.positions || [];
+    const syms = [...new Set(pos.map(p => p.symbol))];
+    return syms;
+  } catch (_) {
+    return [];
+  }
 }
 
-function diffSets(prev = [], curr = []) {
-  const A = new Set(prev), B = new Set(curr);
-  return {
-    added: curr.filter(x => !A.has(x)),
-    removed: prev.filter(x => !B.has(x))
-  };
+function chooseWatchSet(activeSyms, manualSyms){
+  const mode = String(env.RT_WATCH_MODE || 'active-only').toLowerCase();
+  if (mode === 'manual') return manualSyms;
+  if (mode === 'all-active+manual') return [...new Set([...activeSyms, ...manualSyms])];
+  // default 'active-only'
+  return activeSyms;
 }
 
 async function loopOnce(exchange, symbols) {
@@ -75,68 +72,20 @@ async function startRealtimePaperWatcher() {
   const exchange = new ExchangeClass({ enableRateLimit: true, options: { adjustForTimeDifference: true } });
   await exchange.loadMarkets();
 
-  // initial sets
-  let active = await getActiveSymbols(exchange);
-  let manual = normalizeSymbolList(exchange, watch.getSymbols());
-  let toPoll = computeSymbols(active, manual, watch.getMode());
-  console.log(`[rt] watcher started | mode=${watch.getMode()} | poll=${env.RT_POLL_MS}ms | refreshActive=${REFRESH_ACTIVE_MS}ms`);
-  console.log(`[rt] active=${active.join(', ') || '(none)'} | manual=${manual.join(', ') || '(none)'}`);
-
-  let lastRefresh = 0;
-  let lastVersion = watch.getVersion();
+  // Build initial watch set
+  const activeList = await currentActiveSymbolsFromState();
+  const manualList = watch.get();
+  const baseSymbols = chooseWatchSet(activeList, manualList);
+  const symbols = normalizeSymbolList(exchange, baseSymbols);
+  console.log(`[rt] Real-time PAPER watcher started for ${symbols.length} symbols, mode=${env.RT_WATCH_MODE}, poll=${env.RT_POLL_MS}ms`);
 
   while (true) {
-    const now = Date.now();
-
-    // refresh manual if changed
-    if (watch.getVersion() !== lastVersion) {
-      lastVersion = watch.getVersion();
-      const prev = manual;
-      manual = normalizeSymbolList(exchange, watch.getSymbols());
-      const { added, removed } = diffSets(prev, manual);
-      if (added.length)  console.log(`[rt] manual + ${added.join(', ')}`);
-      if (removed.length) console.log(`[rt] manual - ${removed.join(', ')}`);
-      console.log(`[rt] mode=${watch.getMode()} | manual now: ${manual.join(', ') || '(none)'}`);
-    }
-
-    // refresh active periodically
-    if (now - lastRefresh >= REFRESH_ACTIVE_MS) {
-      lastRefresh = now;
-      try {
-        const prev = active;
-        active = await getActiveSymbols(exchange);
-        const { added, removed } = diffSets(prev, active);
-        if (added.length)  console.log(`[rt] active + ${added.join(', ')}`);
-        if (removed.length) console.log(`[rt] active - ${removed.join(', ')}`);
-      } catch (e) {
-        console.error('[rt] refresh active symbols error:', e.message);
-      }
-    }
-
-    // compute set to poll by mode
-    toPoll = computeSymbols(active, manual, watch.getMode());
-
-    try {
-      if (toPoll.length) {
-        await loopOnce(exchange, toPoll);
-      }
-    } catch (e) {
-      console.error('[rt] loop error:', e.message);
-    }
-
+    // refresh watch list each loop so manual/active updates take effect
+    const active = await currentActiveSymbolsFromState();
+    const manual = watch.get();
+    const want = normalizeSymbolList(exchange, chooseWatchSet(active, manual));
+    try { await loopOnce(exchange, want); } catch (e) { console.error('[rt] loop error:', e.message); }
     await sleep(env.RT_POLL_MS);
-  }
-}
-
-function computeSymbols(active, manual, mode) {
-  switch (String(mode).toLowerCase()) {
-    case 'manual': return manual.slice();
-    case 'mix': {
-      const s = new Set([...active, ...manual]);
-      return Array.from(s);
-    }
-    case 'auto':
-    default: return active.slice();
   }
 }
 

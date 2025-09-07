@@ -1,8 +1,8 @@
-// src/scheduler.js
 const cron = require('node-cron');
 const ccxt = require('ccxt');
 const { env, SYMBOLS_ARR } = require('./config');
 const { processSymbol } = require('./bot');
+const { normalizeSymbolList } = require('./market_utils');
 
 function sleep(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
@@ -33,9 +33,8 @@ async function withRetry(fn, { retries = env.RETRIES, base = 250 } = {}) {
   let attempt = 0;
   const jitter = () => Math.floor(Math.random() * 100);
   while (true) {
-    try {
-      return await fn();
-    } catch (e) {
+    try { return await fn(); }
+    catch (e) {
       if (attempt >= retries) throw e;
       const wait = base * (2 ** attempt) + jitter();
       await sleep(wait);
@@ -44,28 +43,10 @@ async function withRetry(fn, { retries = env.RETRIES, base = 250 } = {}) {
   }
 }
 
-async function pickTopSymbols(exchange, count, { quote = 'USDT' } = {}) {
-  const tickers = await exchange.fetchTickers();
-  return Object.entries(tickers)
-    .filter(([sym, t]) => sym.endsWith(`/${quote}`) && t && typeof t.quoteVolume === 'number')
-    .sort((a, b) => b[1].quoteVolume - a[1].quoteVolume)
-    .slice(0, count)
-    .map(([sym]) => sym);
-}
-
-// ---- helpers ----
-function fmtReason(reason) {
-  if (Array.isArray(reason)) return reason.join('|');
-  if (reason == null) return '';
-  if (typeof reason === 'string') return reason;
-  try { return JSON.stringify(reason); } catch { return String(reason); }
-}
-
 async function runJob() {
   const startedAt = Date.now();
-  const startMsg = `=== 4h Close Check @ ${tzStamp(startedAt)} (UTC: ${utcIso(startedAt)}) ===`;
-  if (env.LOG_JSON) console.log(JSON.stringify({ level: 'info', msg: startMsg }));
-  else console.log(`\n${startMsg}`);
+  const startMsg = `=== ${env.TIMEFRAME} Close Check @ ${tzStamp(startedAt)} (UTC: ${utcIso(startedAt)}) ===`;
+  console.log(`\n${startMsg}`);
 
   const ExchangeClass = ccxt[env.EXCHANGE_ID];
   if (!ExchangeClass) { console.error(`Exchange "${env.EXCHANGE_ID}" not supported by ccxt.`); return; }
@@ -77,54 +58,39 @@ async function runJob() {
   });
 
   try {
-    if ((env.POST_CLOSE_DELAY_SEC ?? 0) > 0) await sleep(env.POST_CLOSE_DELAY_SEC * 1000);
     await exchange.loadMarkets();
 
-    if (exchange.timeframes && !exchange.timeframes[env.TIMEFRAME]) {
-      console.error(`Timeframe "${env.TIMEFRAME}" có thể không được hỗ trợ bởi ${env.EXCHANGE_ID}.`);
-    }
-
     let symbols = SYMBOLS_ARR;
-    if (env.AUTOPICK_TOP > 0) {
-      try {
-        symbols = await pickTopSymbols(exchange, env.AUTOPICK_TOP, { quote: env.QUOTE });
-        if (!symbols.length) throw new Error('auto-pick empty');
-        if (!env.LOG_JSON) console.log(`[${tzStamp()}] Auto-pick top ${symbols.length} by volume: ${symbols.join(', ')}`);
-      } catch (e) {
-        console.error(`[${tzStamp()}] Auto-pick lỗi (${e.message}), fallback dùng SYMBOLS từ .env.`);
-        symbols = SYMBOLS_ARR;
+    const normSymbols = normalizeSymbolList(exchange, symbols);
+    for (let i = 0; i < symbols.length; i++) {
+      if (symbols[i] !== normSymbols[i]) {
+        console.log(`[${tzStamp()}] Map ${symbols[i]} -> ${normSymbols[i] || 'UNRESOLVED'}`);
       }
     }
 
     const limit = pLimit(env.CONCURRENCY);
-    const jobs = symbols.map((symbol) =>
+    const jobs = normSymbols.map((symbol) =>
       limit(() =>
         withRetry(() => processSymbol(exchange, symbol))
           .then((r) => {
-            if (env.LOG_JSON) {
-              // structured logs: keep payload as-is
-              console.log(JSON.stringify({ level: 'info', symbol, ...r }));
-              return;
-            }
-
-            const reasonText = fmtReason(r?.reason);
-
-            if (r?.placed) {
-              console.log(
-                `[${tzStamp()}] ✅ ${symbol} ${r.side?.toUpperCase()} `
-                + `qty=${r.qty} @~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
-                + `(${reasonText})`
-              );
-            } else if (r?.simulated && r?.side) {
-              console.log(
-                `[${tzStamp()}] 🔎 ${symbol} signal ${r.side?.toUpperCase()} `
-                + `qty=${r.qty} entry~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
-                + `(${reasonText})`
-              );
-            } else if (r?.simulated) {
-              console.log(`[${tzStamp()}] – ${symbol} simulated: ${reasonText}`);
+            const reasons = Array.isArray(r.reason) ? r.reason : (r.reason ? [r.reason] : []);
+            if (r.placed) {
+              console.log(`[${tzStamp()}] ✅ ${symbol} ${r.side?.toUpperCase()} qty=${r.qty} @~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} (${reasons.join('|')})`);
+            } else if (r.paperEntry) {
+              console.log(`[${tzStamp()}] 🧪 PAPER ENTRY ${symbol} ${r.side?.toUpperCase()} qty=${r.qty} @plan=${r.entry} exec~${r.entryExec} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} | eq=${r.equity} (${reasons.join('|')})`);
+            } else if (Array.isArray(r.paperExits) && r.paperExits.length) {
+              for (const ev of r.paperExits) {
+                const fracPct = Math.round((ev.fraction ?? 0) * 100);
+                console.log(`[${tzStamp()}] 🧪 PAPER EXIT  ${symbol} ${ev.label} frac=${fracPct}% px=${ev.price} at=${ev.when}`);
+              }
+            } else if (r.simulated) {
+              if (r.side) {
+                console.log(`[${tzStamp()}] 🔎 ${symbol} signal ${r.side?.toUpperCase()} qty=${r.qty} entry~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} (${reasons.join('|')})`);
+              } else {
+                console.log(`[${tzStamp()}] – ${symbol} simulated: ${reasons.join('|')}`);
+              }
             } else {
-              console.log(`[${tzStamp()}] – ${symbol} skip: ${reasonText}`);
+              console.log(`[${tzStamp()}] – ${symbol} skip: ${reasons.join('|')}`);
             }
           })
           .catch(e => console.error(`[${tzStamp()}] ${symbol} error:`, e.message))

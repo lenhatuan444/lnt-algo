@@ -1,51 +1,50 @@
-// src/db/mongo.js
 const { MongoClient } = require('mongodb');
-const { env } = require('../config');
+const { env, collFor, sanitizeSid, STRATEGY } = require('../config');
 
-let _client = null;
-let _db = null;
+let clientPromise = null;
 
-async function getClient() {
-  if (_client && _client.topology && _client.topology.isConnected()) return _client;
-  _client = new MongoClient(env.MONGO_URI, { maxPoolSize: 10 });
-  await _client.connect();
-  return _client;
+async function getClient(){
+  if (!clientPromise){
+    const client = new MongoClient(env.MONGO_URI, { ignoreUndefined: true });
+    clientPromise = client.connect();
+  }
+  return clientPromise;
 }
 
-async function getDb() {
-  if (_db) return _db;
+async function getDb(){
   const client = await getClient();
-  _db = client.db(env.MONGO_DB);
-  return _db;
+  return client.db(env.MONGO_DB);
 }
 
-async function getColl(name) {
+async function getColl(base, sid = STRATEGY){
   const db = await getDb();
-  return db.collection(name);
+  return db.collection(collFor(base, sanitizeSid(sid)));
 }
 
-async function ensureIndexes() {
+async function ensureIndexes(){
   if (!env.MONGO_ENABLE) return;
   const db = await getDb();
-  await db.collection(env.MONGO_COLL_ENTRIES).createIndexes([
-    { key: { symbol: 1 } }, { key: { side: 1 } },
-    { key: { entryTs: -1 } }, { key: { entryTime: -1 } },
-  ]);
-  await db.collection(env.MONGO_COLL_EXITS).createIndexes([
-    { key: { symbol: 1 } }, { key: { side: 1 } },
-    { key: { label: 1 } }, { key: { posId: 1 } },
-    { key: { exitTs: -1 } }, { key: { exitTime: -1 } },
-  ]);
-  await db.collection(env.MONGO_COLL_TRADES).createIndexes([
-    { key: { symbol: 1 } }, { key: { side: 1 } },
-    { key: { entryTs: -1 } }, { key: { exitTs: -1 } },
-  ]);
-  await db.collection(env.MONGO_COLL_EQUITY).createIndexes([
-    { key: { time: -1 } }
-  ]);
-  await db.collection(env.MONGO_COLL_POSITIONS).createIndexes([
-    { key: { symbol: 1 } }, { key: { side: 1 } }, { key: { openedAt: -1 } }
-  ]);
+  const sids = [STRATEGY]; // you can pre-create for more strategies if needed
+  for (const sid of sids){
+    await db.collection(collFor('entries', sid)).createIndexes([
+      { key: { entryTs: -1 } }, { key: { symbol: 1 } }, { key: { side: 1 } }
+    ]);
+    await db.collection(collFor('exits', sid)).createIndexes([
+      { key: { exitTs: -1 } }, { key: { symbol: 1 } }, { key: { label: 1 } }
+    ]);
+    await db.collection(collFor('trades', sid)).createIndexes([
+      { key: { entryTs: -1 } }, { key: { exitTs: -1 } }, { key: { symbol: 1 } }
+    ]);
+    await db.collection(collFor('equity', sid)).createIndexes([
+      { key: { time: -1 } }, { key: { timeTs: -1 } }
+    ]);
+    await db.collection(collFor('positions', sid)).createIndexes([
+      { key: { snapshotTs: -1 } }, { key: { symbol: 1 } }
+    ]);
+    await db.collection(collFor('state', sid)).createIndexes([
+      { key: { _id: 1 } }
+    ]);
+  }
 }
 
-module.exports = { getClient, getDb, getColl, ensureIndexes };
+module.exports = { getDb, getColl, ensureIndexes };

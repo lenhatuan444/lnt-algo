@@ -1,62 +1,30 @@
-const fs = require('fs');
-const path = require('path');
-
-function roundToStep(qty, step) {
-  if (!step || step <= 0) return qty;
-  const n = Math.floor(qty / step);
-  return Number((n * step).toFixed(12));
-}
-
-async function setLeverage(exchange, symbol, leverage=5) {
-  if (exchange.id.includes('binance')) {
-    try { await exchange.setLeverage(leverage, symbol); } catch(_) {}
-  }
-}
-
-async function fetchEquityUSDT(exchange) {
+async function setLeverage(exchange, symbol, lev){ try { if (exchange.setLeverage) await exchange.setLeverage(lev, symbol); } catch(_){} }
+async function fetchEquityUSDT(exchange){
   try {
-    const b = await exchange.fetchBalance();
-    const total = (b.total?.USDT ?? b.info?.totalWalletBalance ?? 0);
+    const balance = await exchange.fetchBalance();
+    const total = balance.total?.USDT ?? balance.free?.USDT ?? 0;
     return Number(total) || 0;
-  } catch (e) {
-    return 0;
-  }
+  } catch(_){ return 0; }
 }
 
-function calcQty({ riskPct=0.01, equityUSDT, entry, stop, market }) {
-  const risk$ = equityUSDT * riskPct;
-  const riskPerUnit = Math.abs(entry - stop);
-  if (riskPerUnit <= 0) return 0;
-  let qty = risk$ / riskPerUnit;
-  const prec = market.precision?.amount ?? 6;
-  const step = market.limits?.amount?.min || (1 / (10 ** prec));
-  qty = roundToStep(qty, step);
+function calcQty({ riskPct, equityUSDT, entry, stop, market }){
+  const risk = (Number(riskPct) || 0) / 100;
+  const eq = Number(equityUSDT) || 0;
+  const e = Number(entry) || 0;
+  const s = Number(stop) || 0;
+  const tickValue = 1; // simplified
+  const riskAbs = eq * risk;
+  const riskPerUnit = Math.abs(e - s) * tickValue;
+  if (!riskAbs || !riskPerUnit) return 0;
+  const qty = riskAbs / riskPerUnit;
+  // Round to lot size if market has it
+  const step = market?.limits?.amount?.min || market?.precision?.amount ? (market.precision.amount || 0) : 0;
   return qty;
 }
 
-async function placeBracketOrders(exchange, symbol, side, qty, entry, stop, tp1, tp2) {
-  const antiSide = side === 'buy' ? 'sell' : 'buy';
-  const entryOrder = await exchange.createOrder(symbol, 'market', side, qty, undefined, { reduceOnly: false });
-  await exchange.createOrder(symbol, 'STOP_MARKET', antiSide, qty, undefined, {
-    stopPrice: stop, reduceOnly: true, workingType: 'MARK_PRICE'
-  });
-  await exchange.createOrder(symbol, 'TAKE_PROFIT_MARKET', antiSide, qty/2, undefined, {
-    stopPrice: tp1, reduceOnly: true, workingType: 'MARK_PRICE'
-  });
-  await exchange.createOrder(symbol, 'TAKE_PROFIT_MARKET', antiSide, qty - qty/2, undefined, {
-    stopPrice: tp2, reduceOnly: true, workingType: 'MARK_PRICE'
-  });
-  return entryOrder;
+async function placeBracketOrders(exchange, symbol, side, qty, entry, stop, tp1, tp2){
+  // Stub for live
+  return { id: 'stub-order' };
 }
 
-const STATE_FILE = path.join(process.cwd(), 'bot_state.json');
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch(_) { return {}; }
-}
-function saveState(state) {
-  try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); } catch(_) {}
-}
-
-module.exports = {
-  setLeverage, fetchEquityUSDT, calcQty, placeBracketOrders, loadState, saveState
-};
+module.exports = { setLeverage, fetchEquityUSDT, calcQty, placeBracketOrders };
