@@ -21,6 +21,16 @@ function appendCSV(filename, row, headerOrder) {
   }
 }
 
+// 🔸 Lưu entry ngay khi mở lệnh paper
+function addEntry(open) {
+  appendCSV('paper_entries.csv', open, [
+    'symbol','timeframe','side',
+    'entryTime','entryPlan','entryExec','qty',
+    'equityBefore','slipBps','reason'
+  ]);
+}
+
+// Lưu trade khi đóng lệnh (TP/SL/BE)
 function addTrade(trade) {
   appendCSV('paper_trades.csv', trade, [
     'symbol','timeframe','side',
@@ -30,6 +40,7 @@ function addTrade(trade) {
   ]);
 }
 
+// Ghi equity point (được gọi từ bot.js — chỉ khi có lệnh đóng)
 function addEquityPoint(point) {
   appendCSV('paper_equity.csv', point, ['time','equity']);
 }
@@ -38,4 +49,4 @@ function addPositionSnapshot(pos) {
   appendCSV('paper_positions.csv', pos, ['time','symbol','side','qty','entryExec','stop','tp1','tp2']);
 }
 
-module.exports = { addTrade, addEquityPoint, addPositionSnapshot, PAPER_DIR };
+module.exports = { addEntry, addTrade, addEquityPoint, addPositionSnapshot, PAPER_DIR };

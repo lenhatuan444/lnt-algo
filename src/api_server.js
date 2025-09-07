@@ -306,39 +306,8 @@ function handleLatest(req, res) {
 app.get('/api/latest/:kind', handleLatest);
 app.get('/api/latest/:kind.csv', handleLatest);
 
-// ---- By file id (JSON/CSV) ----
-function handleByFile(req, res) {
-  const kind = req.params.kind;
-  if (!assertKind(kind, res)) return;
+/* ========= PAPER API (đưa LÊN TRƯỚC để không bị /api/:file/:kind nuốt) ========= */
 
-  const g = getGroup(req.params.file);
-  if (!g) return res.status(404).json({ error: 'File not found' });
-
-  const reader = makeReader(g);
-  const q = req.query;
-  const normalize = q.normalize === '1' || q.normalize === 'true';
-
-  let data;
-  if (kind === 'summary') data = reader.summary();
-  if (kind === 'trades')  data = reader.trades(q);
-  if (kind === 'equity')  data = reader.equity({ normalize, limit: q.limit, offset: q.offset });
-
-  if (wantsCsv(req)) {
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=${g.id}_${kind}.csv`);
-    return res.send(toCsv(data));
-  }
-  res.json({
-    file: g.id,
-    kind,
-    data,
-    pagination: { defaultLimit: API_DEFAULT_LIMIT, maxLimit: API_MAX_LIMIT }
-  });
-}
-app.get('/api/:file/:kind', handleByFile);
-app.get('/api/:file/:kind.csv', handleByFile);
-
-// ===== PAPER API =====
 function readCsvMaybe(p) {
   if (!fs.existsSync(p)) return [];
   const text = fs.readFileSync(p, 'utf8').trim();
@@ -360,6 +329,79 @@ function readCsvMaybe(p) {
   return rows;
 }
 
+function countCsvRows(p) {
+  if (!fs.existsSync(p)) return 0;
+  const text = fs.readFileSync(p, 'utf8');
+  if (!text) return 0;
+  const n = (text.match(/\r?\n/g) || []).length;
+  return Math.max(0, n - 1);
+}
+
+function listPaperFiles() {
+  if (!fs.existsSync(PAPER_DIR)) return [];
+  const names = fs.readdirSync(PAPER_DIR).filter(n => n.endsWith('.csv'));
+  const out = [];
+  for (const name of names) {
+    const full = path.join(PAPER_DIR, name);
+    const st = fs.statSync(full);
+    out.push({ name, size: st.size, mtimeMs: st.mtimeMs, rows: countCsvRows(full) });
+  }
+  out.sort((a,b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+// /api/paper/files
+app.get('/api/paper/files', (req, res) => {
+  res.json({ dir: PAPER_DIR, files: listPaperFiles() });
+});
+
+// /api/paper/file/:name
+app.get('/api/paper/file/:name', (req, res) => {
+  const name = path.basename(req.params.name || '');
+  if (!name || name.includes('..') || name.includes('/') || !name.endsWith('.csv')) {
+    return res.status(400).json({ error: 'Invalid file name' });
+  }
+  const file = path.join(PAPER_DIR, name);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename=${name}`);
+  res.sendFile(file);
+});
+
+// /api/paper/entries[.csv]
+app.get(['/api/paper/entries', '/api/paper/entries.csv'], (req, res) => {
+  const file = path.join(PAPER_DIR, 'paper_entries.csv');
+  let rows = readCsvMaybe(file);
+
+  const { symbol, side, from, to, sort = 'entryTime', order = 'desc', limit, offset } = req.query;
+
+  if (symbol) rows = rows.filter(r => String(r.symbol || '').toUpperCase().includes(String(symbol).toUpperCase()));
+  if (side)   rows = rows.filter(r => String(r.side || '').toLowerCase() === String(side).toLowerCase());
+  if (from) { const t = Date.parse(from); rows = rows.filter(r => Date.parse(r.entryTime || 0) >= t); }
+  if (to)   { const t = Date.parse(to);   rows = rows.filter(r => Date.parse(r.entryTime || 0) <= t); }
+
+  const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[sort]; const bv = b[sort];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (!isNaN(av) && !isNaN(bv)) return ord * (Number(av) - Number(bv));
+    return ord * String(av).localeCompare(String(bv));
+  });
+
+  const off = clampOffset(offset);
+  const lim = clampLimit(limit);
+  const page = rows.slice(off, off + lim);
+
+  if (wantsCsv(req)) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=paper_entries.csv');
+    return res.send(toCsv(page));
+  }
+  res.json({ kind: 'paper_entries', total: rows.length, limit: lim, offset: off, data: page });
+});
+
 // /api/paper/history[.csv]
 app.get(['/api/paper/history', '/api/paper/history.csv'], (req, res) => {
   const file = path.join(PAPER_DIR, 'paper_trades.csv');
@@ -372,7 +414,6 @@ app.get(['/api/paper/history', '/api/paper/history.csv'], (req, res) => {
   if (from) { const t = Date.parse(from); rows = rows.filter(r => Date.parse(r.entryTime || 0) >= t); }
   if (to)   { const t = Date.parse(to);   rows = rows.filter(r => Date.parse(r.entryTime || 0) <= t); }
 
-  // sort
   const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
   rows.sort((a, b) => {
     const av = a[sort]; const bv = b[sort];
@@ -383,7 +424,6 @@ app.get(['/api/paper/history', '/api/paper/history.csv'], (req, res) => {
     return ord * String(av).localeCompare(String(bv));
   });
 
-  // paginate
   const off = clampOffset(offset);
   const lim = clampLimit(limit);
   const page = rows.slice(off, off + lim);
@@ -430,6 +470,40 @@ app.get('/api/paper/positions', (req, res) => {
     res.json({ kind: 'paper_positions', data: [] });
   }
 });
+
+/* ================== BACKTEST BY FILE (đặt SAU để tránh nuốt /api/paper/*) ================== */
+
+// ---- By file id (JSON/CSV) ----
+function handleByFile(req, res) {
+  const kind = req.params.kind;
+  if (!assertKind(kind, res)) return;
+
+  const g = getGroup(req.params.file);
+  if (!g) return res.status(404).json({ error: 'File not found' });
+
+  const reader = makeReader(g);
+  const q = req.query;
+  const normalize = q.normalize === '1' || q.normalize === 'true';
+
+  let data;
+  if (kind === 'summary') data = reader.summary();
+  if (kind === 'trades')  data = reader.trades(q);
+  if (kind === 'equity')  data = reader.equity({ normalize, limit: q.limit, offset: q.offset });
+
+  if (wantsCsv(req)) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=${g.id}_${kind}.csv`);
+    return res.send(toCsv(data));
+  }
+  res.json({
+    file: g.id,
+    kind,
+    data,
+    pagination: { defaultLimit: API_DEFAULT_LIMIT, maxLimit: API_MAX_LIMIT }
+  });
+}
+app.get('/api/:file/:kind', handleByFile);
+app.get('/api/:file/:kind.csv', handleByFile);
 
 // ===== Start =====
 app.listen(PORT, () => {

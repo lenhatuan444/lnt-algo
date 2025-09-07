@@ -47,6 +47,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
   const [ts, _o, high, low, close] = bar;
   const events = [];
   const remainPositions = [];
+  let closedSomething = false; // <- chỉ ghi equity khi true
 
   for (const p of paper.positions) {
     if (p.symbol !== symbol) { remainPositions.push(p); continue; }
@@ -55,7 +56,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
     let realized = 0;
     const sideSign = p.side === 'buy' ? 1 : -1;
     const hits = [];
-    const localExits = []; // gom exit của position này để tính avg
+    const localExits = []; // gom exit để tính exitAvg
 
     const exitFrac = (fraction, price, label) => {
       const fillQty = remainingQty * fraction;
@@ -77,7 +78,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
         if (low <= p.entry) exitFrac(1.0, applySlip(p.entry, 'buy', slipBps, {}), 'BE');
         else if (high >= p.tp2) exitFrac(1.0, applySlip(p.tp2, 'buy', slipBps, {}), 'TP2');
       }
-    } else {
+    } else { // short
       if (high >= p.stop && remainingQty > 0) exitFrac(1.0, applySlip(p.stop, 'sell', slipBps, {}), 'SL');
       if (remainingQty > 0 && !p.tp1Hit && low <= p.tp1) {
         exitFrac(0.5, applySlip(p.tp1, 'sell', slipBps, {}), 'TP1');
@@ -93,16 +94,15 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       p.qty = remainingQty;
       remainPositions.push(p);
     } else {
-      // Đóng hoàn toàn → cập nhật equity, lưu trade CSV
+      // Đóng hoàn toàn
       paper.equity += realized;
+      closedSomething = true;
 
-      // Tính exitAvg theo tỉ lệ phần đã đóng
       const closedFrac = localExits.reduce((s, e) => s + e.fraction, 0);
       const exitAvg = closedFrac > 0
         ? localExits.reduce((s, e) => s + e.price * e.fraction, 0) / closedFrac
         : p.entryExec;
 
-      // Lưu lịch sử trong state
       paper.history.push({
         symbol: p.symbol, side: p.side,
         entryTime: p.openedAt, entryPrice: p.entry, entryExec: p.entryExec,
@@ -111,7 +111,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
         hits: hits.join('|')
       });
 
-      // Ghi CSV trade
+      // Ghi trade CSV
       paperStore.addTrade({
         symbol: p.symbol,
         timeframe: process.env.TIMEFRAME || '4h',
@@ -132,8 +132,10 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
 
   paper.positions = remainPositions;
 
-  // Ghi point equity mỗi nến (dù có/không có đóng lệnh)
-  paperStore.addEquityPoint({ time: nowISO(ts), equity: +paper.equity.toFixed(6) });
+  // ✨ Chỉ ghi equity point nếu có lệnh đóng trong nến này
+  if (closedSomething) {
+    paperStore.addEquityPoint({ time: nowISO(ts), equity: +paper.equity.toFixed(6) });
+  }
 
   return events;
 }
@@ -167,6 +169,25 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
     openedAt: nowISO()
   };
   paper.positions.push(pos);
+
+  // 🔸 GHI CSV CHO PAPER ENTRY NGAY TẠI ĐÂY
+  try {
+    paperStore.addEntry({
+      symbol,
+      timeframe: process.env.TIMEFRAME || '4h',
+      side: sig.side,
+      entryTime: pos.openedAt,
+      entryPlan: sig.entry,
+      entryExec: +entryExec.toFixed(6),
+      qty,
+      equityBefore: +paper.equity.toFixed(6),
+      slipBps: Number(process.env.SLIPPAGE_BPS || 0),
+      reason: Array.isArray(sig.reason) ? sig.reason.join('|') : (sig.reason || '')
+    });
+  } catch (e) {
+    // không chặn mở lệnh nếu ghi file lỗi; chỉ log
+    console.error('paperStore.addEntry error:', e.message);
+  }
 
   return {
     opened: true,

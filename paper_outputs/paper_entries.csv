@@ -1,0 +1,2 @@
+symbol,timeframe,side,entryTime,entryPlan,entryExec,qty,equityBefore,slipBps,reason
+"ZRX/USDT:USDT","4h","buy","2025-09-07 04:26:02.926",0.2779,0.278039,8773.2,10000,5,"dailyFilter:UP|VWAP:above|MACD:up-cross|VOL:ok"
