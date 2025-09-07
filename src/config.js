@@ -59,8 +59,15 @@ const env = {
   DONCHIAN_LEN: Number(process.env.DONCHIAN_LEN || 55),
   ATR_LEN: Number(process.env.ATR_LEN || 14),
   ATR_MULT: Number(process.env.ATR_MULT || 2),
-  TP1_RR: Number(process.env.TP1_RR || 1),
+  TP1_RR: Number(process.env.TP1_RR || 1.6),
   TP2_RR: Number(process.env.TP2_RR || 2),
+
+
+  // TP behavior
+  TP_ON_TOUCH: Number(process.env.TP_ON_TOUCH || 1),
+  FULL_TP_ON_TP1: Number(process.env.FULL_TP_ON_TP1 || 1),
+  ADAPT_TP_RR: Number(process.env.ADAPT_TP_RR || 1),
+  TP_PENETRATION_BPS: Number(process.env.TP_PENETRATION_BPS || 0),
 
   // Real-time paper exits
   PAPER_REALTIME: Number(process.env.PAPER_REALTIME || 0),

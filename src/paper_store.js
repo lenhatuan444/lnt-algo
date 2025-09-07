@@ -136,7 +136,7 @@ async function addEquityPoint(point) {
 /* ============ Position snapshots (optional) ============ */
 async function addPositionSnapshot(pos) {
   const doc = { ...pos, snapshotTs: Date.now() };
-  appendCSV('paper_positions.csv', doc, ['time','symbol','side','qty','entryExec','stop','tp1','tp2','snapshotTs']);
+  appendCSV('paper_positions.csv', doc, ['time','symbol','side','qty','entryExec','stop','tp','snapshotTs']);
 
   if (env.MONGO_ENABLE && mongo) {
     try {

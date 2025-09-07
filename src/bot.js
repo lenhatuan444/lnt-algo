@@ -93,24 +93,22 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
 
     if (p.side === 'buy') {
       if (low <= p.stop && remainingQty > 0) exitFrac(1.0, p.stop, 'SL', 'buy');
-      if (remainingQty > 0 && !p.tp1Hit && high >= p.tp1) {
-        exitFrac(0.5, p.tp1, 'TP1', 'buy');
-        p.tp1Hit = true; p.stop = p.entry;
-      }
-      if (remainingQty > 0 && p.tp1Hit) {
-        if (low <= p.entry) exitFrac(1.0, p.entry, 'BE', 'buy');
-        else if (high >= p.tp2) exitFrac(1.0, p.tp2, 'TP2', 'buy');
-      }
+      
+if (remainingQty > 0 && high >= p.tp1) {
+  exitFrac(1.0, p.tp1, 'TP1_FULL', 'buy');
+}
+
+      // removed staged BE after TP1 (full TP1 mode)
+
     } else {
       if (high >= p.stop && remainingQty > 0) exitFrac(1.0, p.stop, 'SL', 'sell');
-      if (remainingQty > 0 && !p.tp1Hit && low <= p.tp1) {
-        exitFrac(0.5, p.tp1, 'TP1', 'sell');
-        p.tp1Hit = true; p.stop = p.entry;
-      }
-      if (remainingQty > 0 && p.tp1Hit) {
-        if (high >= p.entry) exitFrac(1.0, p.entry, 'BE', 'sell');
-        else if (low <= p.tp2) exitFrac(1.0, p.tp2, 'TP2', 'sell');
-      }
+      
+if (remainingQty > 0 && low <= p.tp1) {
+  exitFrac(1.0, p.tp1, 'TP1_FULL', 'sell');
+}
+
+      // removed staged BE after TP1 (full TP1 mode)
+
     }
 
     if (remainingQty > 0) {
@@ -288,6 +286,7 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
     stop: sig.stop,
     tp1: sig.tp1,
     tp2: sig.tp2,
+    tp: sig.tp1,
     tp1Hit: false,
     openedAt: nowISO()
   };
@@ -318,8 +317,7 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
       qty: pos.qty,
       entryExec: +pos.entryExec.toFixed(6),
       stop: pos.stop,
-      tp1: pos.tp1,
-      tp2: pos.tp2
+      tp: pos.tp
     });
   } catch (e) {
     console.error('paperStore entry/snapshot error:', e.message);
@@ -349,7 +347,7 @@ async function processSymbol(exchange, symbol) {
   const sig = signalFromOHLCV({ ohlcv4h, ohlcv1d }, {
     macdFast: env.MACD_FAST, macdSlow: env.MACD_SLOW, macdSignal: env.MACD_SIGNAL,
     emaDailyLen: env.DAILY_EMA, atrLen: env.ATR_LEN, atrMult: env.ATR_MULT,
-    volLen: env.VOL_LEN, volRatio: env.VOL_RATIO, tp1RR: env.TP1_RR, tp2RR: env.TP2_RR,
+    volLen: env.VOL_LEN, volRatio: env.VOL_RATIO, tp1RR: env.TP1_RR, tp2RR: env.TP2_RR, adaptTpRR: !!env.ADAPT_TP_RR,
     donchianLen: env.DONCHIAN_LEN
   });
 
