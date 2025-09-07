@@ -48,6 +48,76 @@ function genPosId(symbol) {
   return `P-${symbol.replace(/[^A-Z0-9]/gi,'')}-${Date.now()}-${Math.floor(Math.random()*1e6)}`;
 }
 
+// === Exit engine helpers (profile-based) ===
+function initExitForPos(pos) {
+  pos.riskR = Math.max(1e-9, Math.abs(pos.entry - pos.stop));
+  pos.exitProfile = pos.exitProfile || (pos.exit || 'trend_trail');
+
+  // Default TP per profile
+  if (pos.exitProfile === 'breakout_mm') {
+    // use measured move (rangeH) or ATR multiple
+    const atrTpMult = Number(process.env.ATR_TP_MULT || 2.0);
+    if (pos.side === 'buy') {
+      const tpMM = pos.rangeH ? (pos.entryExec + pos.rangeH) : null;
+      const tpATR= pos.entryExec + atrTpMult * (pos.atrNow || pos.riskR);
+      pos.tp = tpMM ? Math.max(tpMM, tpATR) : tpATR;
+    } else {
+      const tpMM = pos.rangeH ? (pos.entryExec - pos.rangeH) : null;
+      const tpATR= pos.entryExec - atrTpMult * (pos.atrNow || pos.riskR);
+      pos.tp = tpMM ? Math.min(tpMM, tpATR) : tpATR;
+    }
+  } else if (pos.exitProfile === 'trend_trail') {
+    const rrHard = Number(process.env.HARD_TP_RR_TREND || 5.0);
+    pos.tp = pos.side === 'buy' ? pos.entryExec + rrHard * pos.riskR : pos.entryExec - rrHard * pos.riskR;
+    pos.highestClose = pos.entryExec;
+    pos.lowestClose  = pos.entryExec;
+    pos.chandelierK  = Number(process.env.CHANDELIER_K || 3.5);
+  } else if (pos.exitProfile === 'mean_revert') {
+    const mrRR = Number(process.env.MR_TP_RR || 1.0);
+    pos.tp = pos.side === 'buy' ? pos.entryExec + mrRR * pos.riskR : pos.entryExec - mrRR * pos.riskR;
+  } else if (pos.exitProfile === 'pullback_two_step') {
+    const rr = Number(process.env.TP1_RR || 1.6);
+    pos.tp = pos.side === 'buy' ? pos.entryExec + rr * pos.riskR : pos.entryExec - rr * pos.riskR;
+  } else {
+    // fallback
+    const rr = Number(process.env.TP1_RR || 1.6);
+    pos.tp = pos.side === 'buy' ? pos.entryExec + rr * pos.riskR : pos.entryExec - rr * pos.riskR;
+  }
+  pos.openBars = 0;
+  return pos;
+}
+
+function updateExitForPosOnBar(pos, bar) {
+  // bar: [ts,o,h,l,c,v]
+  const c = bar[4];
+  pos.openBars = (pos.openBars || 0) + 1;
+
+  if (pos.exitProfile === 'trend_trail') {
+    if (pos.side === 'buy') {
+      pos.highestClose = Math.max(pos.highestClose || -Infinity, c);
+      const newStop = (pos.highestClose - (pos.chandelierK || 3.5) * (pos.atrNow || pos.riskR));
+      pos.stop = Math.max(pos.stop, newStop);
+    } else {
+      pos.lowestClose = Math.min(pos.lowestClose || Infinity, c);
+      const newStop = (pos.lowestClose + (pos.chandelierK || 3.5) * (pos.atrNow || pos.riskR));
+      pos.stop = Math.min(pos.stop, newStop);
+    }
+  } else if (pos.exitProfile === 'breakout_mm') {
+    // time-stop: if not reach 0.5R after N bars -> exit at close
+    const [ , , high, low ] = bar;
+    const maxFavorableR = pos.side === 'buy'
+      ? ((high - pos.entryExec) / pos.riskR)
+      : ((pos.entryExec - low) / pos.riskR);
+    const tsBars = Number(process.env.TIME_STOP_BARS || 6);
+    if (pos.openBars >= tsBars && maxFavorableR < 0.5) {
+      return { forceExit: true, label: 'TIME_STOP', price: c };
+    }
+  } else if (pos.exitProfile === 'mean_revert') {
+    // Optionally could update TP toward mean; keeping static for now
+  }
+  return { };
+}
+
 /** ======== BAR-CLOSE exits (uses high/low) ======== */
 function processPaperExits({ paper, symbol, bar, slipBps }) {
   const [ts, _o, high, low] = bar;
@@ -58,6 +128,62 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
     if (p.symbol !== symbol) { remainPositions.push(p); continue; }
 
     let remainingQty = p.qty;
+
+    // profile-based update on bar-close
+    const upd = updateExitForPosOnBar(p, bar);
+    if (upd && upd.forceExit && remainingQty > 0) {
+      // quick full exit
+      const sideSign = p.side === 'buy' ? 1 : -1;
+      let realized = sideSign * (upd.price - p.entryExec) * remainingQty;
+      const pxEff = applySlip(upd.price, p.side, slipBps, {});
+      realized = sideSign * (pxEff - p.entryExec) * remainingQty;
+
+      paperStore.addExit({
+        posId: p.posId,
+        symbol: p.symbol,
+        timeframe: env.TIMEFRAME || '4h',
+        side: p.side,
+        label: upd.label,
+        fraction: 1.0,
+        price: +pxEff.toFixed(6),
+        qty: +remainingQty.toFixed(8),
+        pnlDelta: +realized.toFixed(6),
+        entryExec: +p.entryExec.toFixed(6),
+        entryTime: p.openedAt,
+        exitTime: nowISO(ts),
+        equityAfter: '',
+        slipBps: Number(env.SLIPPAGE_BPS || 0)
+      });
+      // finalize trade
+      paper.equity += realized;
+      const exitAvg = pxEff;
+      paper.history.push({
+        posId: p.posId,
+        symbol: p.symbol, side: p.side,
+        entryTime: p.openedAt, entryPrice: p.entry, entryExec: p.entryExec,
+        exitTime: nowISO(ts), exitAvg: +exitAvg.toFixed(6),
+        qtyFilled: p.qtyOrig, pnl: +realized.toFixed(6), hits: upd.label
+      });
+      paperStore.addTrade({
+        posId: p.posId,
+        symbol: p.symbol,
+        timeframe: env.TIMEFRAME || '4h',
+        side: p.side,
+        entryTime: p.openedAt,
+        entryPlan: p.entry,
+        entryExec: +p.entryExec.toFixed(6),
+        exitTime: nowISO(ts),
+        exitAvg: +exitAvg.toFixed(6),
+        qty: p.qtyOrig,
+        pnl: +realized.toFixed(6),
+        hits: upd.label,
+        equityAfter: +paper.equity.toFixed(6),
+        slipBps: Number(env.SLIPPAGE_BPS || 0)
+      });
+      // position closed
+      continue;
+    }
+
     let realized = 0;
     const sideSign = p.side === 'buy' ? 1 : -1;
     const localExits = [];
@@ -93,22 +219,10 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
 
     if (p.side === 'buy') {
       if (low <= p.stop && remainingQty > 0) exitFrac(1.0, p.stop, 'SL', 'buy');
-      
-if (remainingQty > 0 && high >= p.tp1) {
-  exitFrac(1.0, p.tp1, 'TP1_FULL', 'buy');
-}
-
-      // removed staged BE after TP1 (full TP1 mode)
-
+      if (remainingQty > 0 && high >= p.tp) { exitFrac(1.0, p.tp, 'TP_FULL', 'buy'); }
     } else {
       if (high >= p.stop && remainingQty > 0) exitFrac(1.0, p.stop, 'SL', 'sell');
-      
-if (remainingQty > 0 && low <= p.tp1) {
-  exitFrac(1.0, p.tp1, 'TP1_FULL', 'sell');
-}
-
-      // removed staged BE after TP1 (full TP1 mode)
-
+      if (remainingQty > 0 && low <= p.tp) { exitFrac(1.0, p.tp, 'TP_FULL', 'sell'); }
     }
 
     if (remainingQty > 0) {
@@ -197,24 +311,10 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
 
     if (p.side === 'buy') {
       if (remainingQty > 0 && price <= p.stop) doExit(1.0, p.stop, 'SL', 'buy');
-      if (remainingQty > 0 && !p.tp1Hit && price >= p.tp1) {
-        doExit(0.5, p.tp1, 'TP1', 'buy');
-        p.tp1Hit = true; p.stop = p.entry;
-      }
-      if (remainingQty > 0 && p.tp1Hit) {
-        if (price <= p.entry) doExit(1.0, p.entry, 'BE', 'buy');
-        else if (price >= p.tp2) doExit(1.0, p.tp2, 'TP2', 'buy');
-      }
+      if (remainingQty > 0 && price >= p.tp)   doExit(1.0, p.tp,   'TP_FULL', 'buy');
     } else {
       if (remainingQty > 0 && price >= p.stop) doExit(1.0, p.stop, 'SL', 'sell');
-      if (remainingQty > 0 && !p.tp1Hit && price <= p.tp1) {
-        doExit(0.5, p.tp1, 'TP1', 'sell');
-        p.tp1Hit = true; p.stop = p.entry;
-      }
-      if (remainingQty > 0 && p.tp1Hit) {
-        if (price >= p.entry) doExit(1.0, p.entry, 'BE', 'sell');
-        else if (price <= p.tp2) doExit(1.0, p.tp2, 'TP2', 'sell');
-      }
+      if (remainingQty > 0 && price <= p.tp)   doExit(1.0, p.tp,   'TP_FULL', 'sell');
     }
 
     if (remainingQty > 0) {
@@ -257,7 +357,6 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
   }
 
   paper.positions = remainPositions;
-  // equity point khi đóng lệnh đã được paper_store.addTrade() xử lý
   return events;
 }
 
@@ -286,11 +385,15 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
     stop: sig.stop,
     tp1: sig.tp1,
     tp2: sig.tp2,
+    exitProfile: sig.exitProfile,
+    rangeH: sig.rangeH,
+    atrNow: sig.atrNow,
+    vwapEntry: sig.vwapAtEntry,
     tp: sig.tp1,
     tp1Hit: false,
     openedAt: nowISO()
   };
-  paper.positions.push(pos);
+  paper.positions.push(initExitForPos(pos));
 
   try {
     // 1) Lưu log entry
@@ -347,7 +450,7 @@ async function processSymbol(exchange, symbol) {
   const sig = signalFromOHLCV({ ohlcv4h, ohlcv1d }, {
     macdFast: env.MACD_FAST, macdSlow: env.MACD_SLOW, macdSignal: env.MACD_SIGNAL,
     emaDailyLen: env.DAILY_EMA, atrLen: env.ATR_LEN, atrMult: env.ATR_MULT,
-    volLen: env.VOL_LEN, volRatio: env.VOL_RATIO, tp1RR: env.TP1_RR, tp2RR: env.TP2_RR, adaptTpRR: !!env.ADAPT_TP_RR,
+    volLen: env.VOL_LEN, volRatio: env.VOL_RATIO, tp1RR: env.TP1_RR, tp2RR: env.TP2_RR,
     donchianLen: env.DONCHIAN_LEN
   });
 
@@ -364,12 +467,12 @@ async function processSymbol(exchange, symbol) {
     if (!qty || qty <= 0) { await saveState(state); return { symbol, skipped: true, reason: ['qty-zero'], plan: sig }; }
 
     await setLeverage(exchange, symbol, env.LEVERAGE);
-    const entryOrder = await placeBracketOrders(exchange, symbol, sig.side, qty, sig.entry, sig.stop, sig.tp1, sig.tp2);
+    const entryOrder = await placeBracketOrders(exchange, symbol, sig.side, qty, sig.entry, sig.stop, sig.tp1);
 
     await saveState(state);
     return {
       symbol, placed: true, side: sig.side, qty,
-      entry: sig.entry, stop: sig.stop, tp1: sig.tp1, tp2: sig.tp2,
+      entry: sig.entry, stop: sig.stop, tp1: sig.tp1,
       orderId: entryOrder?.id,
       reason: Array.isArray(sig.reason) ? sig.reason : (sig.reason ? [sig.reason] : [])
     };

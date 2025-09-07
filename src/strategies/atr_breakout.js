@@ -1,5 +1,7 @@
 // src/strategies/atr_breakout.js
 const { env } = require('../config');
+const { dailyVWAP } = require('../indicators');
+const { computeFeatures, chooseExitProfile, donchian } = require('../exit_profile');
 
 function calcATR(ohlcv, len = 14) {
   if (!ohlcv || ohlcv.length < len + 2) return null;
@@ -14,53 +16,75 @@ function calcATR(ohlcv, len = 14) {
   for (let i = trs.length - len; i < trs.length; i++) sum += trs[i];
   return sum / len;
 }
-function maxHigh(arr, fromIdx, toIdx) { let m = -Infinity; for (let i = fromIdx; i <= toIdx; i++) m = Math.max(m, arr[i]); return m; }
-function minLow(arr, fromIdx, toIdx)  { let m =  Infinity; for (let i = fromIdx; i <= toIdx; i++) m = Math.min(m, arr[i]); return m; }
+function maxHigh(arr, a, b) { let m = -Infinity; for (let i = a; i <= b; i++) if (arr[i] > m) m = arr[i]; return m; }
+function minLow (arr, a, b) { let m =  Infinity; for (let i = a; i <= b; i++) if (arr[i] < m) m = arr[i]; return m; }
 
 function signalFromOHLCV({ ohlcv4h }, params = {}) {
-  const donLen  = Number(params.donchianLen ?? env.DONCHIAN_LEN ?? 55);
-  const atrLen  = Number(params.atrLen ?? env.ATR_LEN ?? 14);
-  const atrMult = Number(params.atrMult ?? env.ATR_MULT ?? 2);
-  const tp1RR   = Number(params.tp1RR ?? env.TP1_RR ?? 1);
-  const tp2RR   = Number(params.tp2RR ?? env.TP2_RR ?? 2);
+  const donLen = Number(params.DONCHIAN_LEN || env.DONCHIAN_LEN || 55);
+  const atrLen = Number(params.ATR_LEN || env.ATR_LEN || 14);
+  const atrMult= Number(params.ATR_MULT || env.ATR_MULT || 2);
+  const tp1RR  = Number(params.TP1_RR  || env.TP1_RR  || 2);
+  const tp2RR  = Number(params.TP2_RR  || env.TP2_RR  || 2);
 
   const N = ohlcv4h?.length || 0;
-  if (N < Math.max(donLen + 3, atrLen + 3)) return { side: null, reason: ['insufficient-data'] };
+  if (!N || N < Math.max(donLen + 3, atrLen + 3)) return { side: null, reason: ['insufficient-data'] };
 
-  const last = ohlcv4h[N - 2];
-  const [, , h, l, c] = last;
+  const last = ohlcv4h[N - 2]; // last closed bar
+  const [ts, o, h, l, c, v] = last;
 
+  // Donchian
   const highs = ohlcv4h.map(b => b[2]);
   const lows  = ohlcv4h.map(b => b[3]);
-
   const start = N - 2 - donLen;
   const end   = N - 3;
   const dcHigh = maxHigh(highs, start, end);
   const dcLow  = minLow(lows,  start, end);
+  const rangeH = Math.max(1e-9, dcHigh - dcLow);
 
-  const atr = calcATR(ohlcv4h, atrLen);
-  if (!atr || !Number.isFinite(atr) || atr <= 0) return { side: null, reason: ['atr-na'] };
+  // ATR & VWAP
+  const atrNow = calcATR(ohlcv4h, atrLen);
+  const vwapArr = dailyVWAP(ohlcv4h);
+  const vwapNow = vwapArr[N - 2];
 
-  const reasons = ['donchian', `len:${donLen}`, `atr:${atr.toFixed(6)}`];
+  const reasons = [`dcH:${dcHigh.toFixed(6)}`, `dcL:${dcLow.toFixed(6)}`, `ATR:${atrNow?.toFixed(6)}`];
 
+  // Breakout logic
   if (c > dcHigh && h >= dcHigh) {
     const entry = c;
-    const stop  = entry - atrMult * atr;
+    const stop  = entry - atrMult * atrNow;
     const risk  = Math.max(1e-9, entry - stop);
-    const tp1   = entry + tp1RR * risk;
-    const tp2   = entry + tp2RR * risk;
-    reasons.push('long-breakout');
-    return { side: 'buy', entry, stop, tp1, tp2, reason: reasons };
+
+    // Choose exit profile
+    const feat = computeFeatures({ ohlcv4h, vwapArr }, N - 2, 'buy');
+    const EXIT_MODE = (process.env.EXIT_MODE || 'auto').toLowerCase();
+    const exitProfile = chooseExitProfile(feat, 'buy', EXIT_MODE, 'atr_breakout');
+
+    // Primary TP for breakout_mm = measured move or ATR multiple
+    const atrTpMult = Number(process.env.ATR_TP_MULT || 2.0);
+    const tpMM = entry + rangeH;
+    const tpATR= entry + atrTpMult * atrNow;
+    const tp1  = exitProfile === 'breakout_mm' ? Math.max(tpMM, tpATR) : (entry + tp1RR * risk);
+
+    reasons.push('long-breakout', `exit:${exitProfile}`);
+    return { side: 'buy', entry, stop, tp1, tp2: null, reason: reasons, exitProfile, rangeH, atrNow, vwapAtEntry: vwapNow };
   }
 
   if (c < dcLow && l <= dcLow) {
     const entry = c;
-    const stop  = entry + atrMult * atr;
+    const stop  = entry + atrMult * atrNow;
     const risk  = Math.max(1e-9, stop - entry);
-    const tp1   = entry - tp1RR * risk;
-    const tp2   = entry - tp2RR * risk;
-    reasons.push('short-breakout');
-    return { side: 'sell', entry, stop, tp1, tp2, reason: reasons };
+
+    const feat = computeFeatures({ ohlcv4h, vwapArr }, N - 2, 'sell');
+    const EXIT_MODE = (process.env.EXIT_MODE || 'auto').toLowerCase();
+    const exitProfile = chooseExitProfile(feat, 'sell', EXIT_MODE, 'atr_breakout');
+
+    const atrTpMult = Number(process.env.ATR_TP_MULT || 2.0);
+    const tpMM = entry - rangeH;
+    const tpATR= entry - atrTpMult * atrNow;
+    const tp1  = exitProfile === 'breakout_mm' ? Math.min(tpMM, tpATR) : (entry - tp1RR * risk);
+
+    reasons.push('short-breakout', `exit:${exitProfile}`);
+    return { side: 'sell', entry, stop, tp1, tp2: null, reason: reasons, exitProfile, rangeH, atrNow, vwapAtEntry: vwapNow };
   }
 
   return { side: null, reason: ['no-breakout', `dcH:${dcHigh.toFixed(6)}`, `dcL:${dcLow.toFixed(6)}`] };

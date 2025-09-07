@@ -59,13 +59,25 @@ const env = {
   DONCHIAN_LEN: Number(process.env.DONCHIAN_LEN || 55),
   ATR_LEN: Number(process.env.ATR_LEN || 14),
   ATR_MULT: Number(process.env.ATR_MULT || 2),
-  TP1_RR: Number(process.env.TP1_RR || 1.6),
+  TP1_RR: Number(process.env.TP1_RR || 1),
   TP2_RR: Number(process.env.TP2_RR || 2),
 
-
-  // TP behavior
+  
+  // Exit profiles & engine
+  EXIT_MODE: (process.env.EXIT_MODE || 'auto').toLowerCase(),
+  EXIT_PROFILE_MAP: process.env.EXIT_PROFILE_MAP || '',
   TP_ON_TOUCH: Number(process.env.TP_ON_TOUCH || 1),
+  SL_ON_TOUCH: Number(process.env.SL_ON_TOUCH || 1),
   FULL_TP_ON_TP1: Number(process.env.FULL_TP_ON_TP1 || 1),
+
+  // Profile params
+  ATR_TP_MULT: Number(process.env.ATR_TP_MULT || 2.0),
+  CHANDELIER_K: Number(process.env.CHANDELIER_K || 3.5),
+  HARD_TP_RR_TREND: Number(process.env.HARD_TP_RR_TREND || 5.0),
+  TIME_STOP_BARS: Number(process.env.TIME_STOP_BARS || 6),
+  MR_TP_RR: Number(process.env.MR_TP_RR || 1.0),
+
+  // Adaptive TP for default strategy
   ADAPT_TP_RR: Number(process.env.ADAPT_TP_RR || 1),
   TP_PENETRATION_BPS: Number(process.env.TP_PENETRATION_BPS || 0),
 
