@@ -1,12 +1,13 @@
 {
   "name": "lnt-algo-multi-strategy",
   "version": "1.0.0",
+  "private": true,
   "type": "commonjs",
-  "main": "src/index.js",
+  "main": "src/runner_multi.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/runner_multi.js",
+    "start:single": "node src/worker_strategy.js",
     "start:api": "node src/api_server.js",
-    "start:scheduler": "node src/scheduler.js",
     "start:rt": "node -e \"require('./src/realtime_paper').startRealtimePaperWatcher()\""
   },
   "dependencies": {
