@@ -9,6 +9,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
+const { env } = require('./config');
 
 const app = express();
 
@@ -28,6 +29,27 @@ try {
 
 app.use(cors({ origin: CORS_ORIGIN, credentials: false }));
 app.use(express.json({ limit: '1mb' }));
+
+// ===== Mongo helpers =====
+let mongo = null;
+if (env.MONGO_ENABLE) {
+  try {
+    mongo = require('./db/mongo');
+    mongo.ensureIndexes().catch(()=>{});
+    console.log('[api] Mongo enabled -> primary source for /api/paper/*');
+  } catch (e) {
+    console.error('[api] Mongo load error:', e.message);
+  }
+}
+
+async function mongoQuery(collName, { filter = {}, sort = {}, limit = API_DEFAULT_LIMIT, offset = 0 } = {}) {
+  const db = await mongo.getDb();
+  const coll = db.collection(collName);
+  const total = await coll.countDocuments(filter);
+  const cursor = coll.find(filter).sort(sort).skip(offset).limit(limit);
+  const data = await cursor.toArray();
+  return { total, data };
+}
 
 // ===== Helpers (backtest files) =====
 function listGroups() {
@@ -306,7 +328,7 @@ function handleLatest(req, res) {
 app.get('/api/latest/:kind', handleLatest);
 app.get('/api/latest/:kind.csv', handleLatest);
 
-/* ========= PAPER API (đưa LÊN TRƯỚC để không bị /api/:file/:kind nuốt) ========= */
+/* ========= PAPER API (ĐẶT LÊN TRƯỚC để không bị /api/:file/:kind nuốt) ========= */
 
 function readCsvMaybe(p) {
   if (!fs.existsSync(p)) return [];
@@ -328,7 +350,6 @@ function readCsvMaybe(p) {
   }
   return rows;
 }
-
 function countCsvRows(p) {
   if (!fs.existsSync(p)) return 0;
   const text = fs.readFileSync(p, 'utf8');
@@ -336,7 +357,6 @@ function countCsvRows(p) {
   const n = (text.match(/\r?\n/g) || []).length;
   return Math.max(0, n - 1);
 }
-
 function listPaperFiles() {
   if (!fs.existsSync(PAPER_DIR)) return [];
   const names = fs.readdirSync(PAPER_DIR).filter(n => n.endsWith('.csv'));
@@ -369,7 +389,33 @@ app.get('/api/paper/file/:name', (req, res) => {
 });
 
 // /api/paper/entries[.csv]
-app.get(['/api/paper/entries', '/api/paper/entries.csv'], (req, res) => {
+app.get(['/api/paper/entries', '/api/paper/entries.csv'], async (req, res) => {
+  if (env.MONGO_ENABLE && mongo) {
+    try {
+      const { symbol, side, from, to, sort = 'entryTs', order = 'desc', limit, offset } = req.query;
+      const filter = {};
+      if (symbol) filter.symbol = { $regex: String(symbol), $options: 'i' };
+      if (side) filter.side = String(side).toLowerCase();
+      if (from || to) {
+        filter.entryTs = {};
+        if (from) filter.entryTs.$gte = Date.parse(from);
+        if (to)   filter.entryTs.$lte = Date.parse(to);
+      }
+      const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+      const lim = clampLimit(limit); const off = clampOffset(offset);
+      const { total, data } = await mongoQuery(env.MONGO_COLL_ENTRIES, { filter, sort: { [sort]: ord }, limit: lim, offset: off });
+      if (wantsCsv(req)) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename=paper_entries.csv');
+        return res.send(toCsv(data));
+      }
+      return res.json({ kind: 'paper_entries', total, limit: lim, offset: off, data });
+    } catch (e) {
+      console.error('entries mongo error:', e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  // CSV fallback
   const file = path.join(PAPER_DIR, 'paper_entries.csv');
   let rows = readCsvMaybe(file);
 
@@ -402,8 +448,98 @@ app.get(['/api/paper/entries', '/api/paper/entries.csv'], (req, res) => {
   res.json({ kind: 'paper_entries', total: rows.length, limit: lim, offset: off, data: page });
 });
 
+// /api/paper/exits[.csv]
+app.get(['/api/paper/exits', '/api/paper/exits.csv'], async (req, res) => {
+  if (env.MONGO_ENABLE && mongo) {
+    try {
+      const { symbol, side, label, posId, from, to, sort = 'exitTs', order = 'desc', limit, offset } = req.query;
+      const filter = {};
+      if (symbol) filter.symbol = { $regex: String(symbol), $options: 'i' };
+      if (side) filter.side = String(side).toLowerCase();
+      if (label) filter.label = String(label).toUpperCase();
+      if (posId) filter.posId = String(posId);
+      if (from || to) {
+        filter.exitTs = {};
+        if (from) filter.exitTs.$gte = Date.parse(from);
+        if (to)   filter.exitTs.$lte = Date.parse(to);
+      }
+      const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+      const lim = clampLimit(limit); const off = clampOffset(offset);
+      const { total, data } = await mongoQuery(env.MONGO_COLL_EXITS, { filter, sort: { [sort]: ord }, limit: lim, offset: off });
+      if (wantsCsv(req)) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename=paper_exits.csv');
+        return res.send(toCsv(data));
+      }
+      return res.json({ kind: 'paper_exits', total, limit: lim, offset: off, data });
+    } catch (e) {
+      console.error('exits mongo error:', e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  // CSV fallback
+  const file = path.join(PAPER_DIR, 'paper_exits.csv');
+  let rows = readCsvMaybe(file);
+
+  const { symbol, side, label, posId, from, to, sort = 'exitTime', order = 'desc', limit, offset } = req.query;
+
+  if (symbol) rows = rows.filter(r => String(r.symbol || '').toUpperCase().includes(String(symbol).toUpperCase()));
+  if (side)   rows = rows.filter(r => String(r.side || '').toLowerCase() === String(side).toLowerCase());
+  if (label)  rows = rows.filter(r => String(r.label || '').toUpperCase() === String(label).toUpperCase());
+  if (posId)  rows = rows.filter(r => String(r.posId || '') === String(posId));
+  if (from) { const t = Date.parse(from); rows = rows.filter(r => Date.parse(r.exitTime || 0) >= t); }
+  if (to)   { const t = Date.parse(to);   rows = rows.filter(r => Date.parse(r.exitTime || 0) <= t); }
+
+  const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[sort]; const bv = b[sort];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (!isNaN(av) && !isNaN(bv)) return ord * (Number(av) - Number(bv));
+    return ord * String(av).localeCompare(String(bv));
+  });
+
+  const off = clampOffset(offset);
+  const lim = clampLimit(limit);
+  const page = rows.slice(off, off + lim);
+
+  if (wantsCsv(req)) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=paper_exits.csv');
+    return res.send(toCsv(page));
+  }
+  res.json({ kind: 'paper_exits', total: rows.length, limit: lim, offset: off, data: page });
+});
+
 // /api/paper/history[.csv]
-app.get(['/api/paper/history', '/api/paper/history.csv'], (req, res) => {
+app.get(['/api/paper/history', '/api/paper/history.csv'], async (req, res) => {
+  if (env.MONGO_ENABLE && mongo) {
+    try {
+      const { symbol, side, from, to, sort = 'entryTs', order = 'desc', limit, offset } = req.query;
+      const filter = {};
+      if (symbol) filter.symbol = { $regex: String(symbol), $options: 'i' };
+      if (side) filter.side = String(side).toLowerCase();
+      if (from || to) {
+        filter.entryTs = {};
+        if (from) filter.entryTs.$gte = Date.parse(from);
+        if (to)   filter.entryTs.$lte = Date.parse(to);
+      }
+      const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+      const lim = clampLimit(limit); const off = clampOffset(offset);
+      const { total, data } = await mongoQuery(env.MONGO_COLL_TRADES, { filter, sort: { [sort]: ord }, limit: lim, offset: off });
+      if (wantsCsv(req)) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename=paper_history.csv');
+        return res.send(toCsv(data));
+      }
+      return res.json({ kind: 'paper_history', total, limit: lim, offset: off, data });
+    } catch (e) {
+      console.error('history mongo error:', e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  // CSV fallback
   const file = path.join(PAPER_DIR, 'paper_trades.csv');
   let rows = readCsvMaybe(file);
 
@@ -437,7 +573,30 @@ app.get(['/api/paper/history', '/api/paper/history.csv'], (req, res) => {
 });
 
 // /api/paper/equity[.csv]?normalize=1
-app.get(['/api/paper/equity', '/api/paper/equity.csv'], (req, res) => {
+app.get(['/api/paper/equity', '/api/paper/equity.csv'], async (req, res) => {
+  if (env.MONGO_ENABLE && mongo) {
+    try {
+      const normalize = String(req.query.normalize || '').toLowerCase();
+      const doNorm = normalize === '1' || normalize === 'true';
+      const lim = clampLimit(req.query.limit); const off = clampOffset(req.query.offset);
+      const { total, data } = await mongoQuery(env.MONGO_COLL_EQUITY, { filter: {}, sort: { time: -1 }, limit: lim, offset: off });
+      let rows = data;
+      if (doNorm && rows.length) {
+        const e0 = Number(rows[rows.length - 1]?.equity || rows[0]?.equity);
+        rows = rows.map(r => ({ ...r, norm: e0 ? Number(r.equity) / e0 : null }));
+      }
+      if (wantsCsv(req)) {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename=paper_equity.csv');
+        return res.send(toCsv(rows));
+      }
+      return res.json({ kind: 'paper_equity', total, limit: lim, offset: off, data: rows });
+    } catch (e) {
+      console.error('equity mongo error:', e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  // CSV fallback
   const file = path.join(PAPER_DIR, 'paper_equity.csv');
   let rows = readCsvMaybe(file);
   const normalize = String(req.query.normalize || '').toLowerCase();
@@ -461,7 +620,19 @@ app.get(['/api/paper/equity', '/api/paper/equity.csv'], (req, res) => {
 });
 
 // /api/paper/positions
-app.get('/api/paper/positions', (req, res) => {
+app.get('/api/paper/positions', async (req, res) => {
+  if (env.MONGO_ENABLE && mongo) {
+    try {
+      const db = await mongo.getDb();
+      const coll = db.collection(env.MONGO_COLL_STATE);
+      const doc = await coll.findOne({ _id: 'singleton' });
+      const positions = doc?.state?.paper?.positions || [];
+      return res.json({ kind: 'paper_positions', data: positions });
+    } catch (e) {
+      console.error('positions mongo error:', e.message);
+      // fall through to file
+    }
+  }
   try {
     const state = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'bot_state.json'), 'utf8'));
     const positions = (state.paper && Array.isArray(state.paper.positions)) ? state.paper.positions : [];
@@ -473,7 +644,6 @@ app.get('/api/paper/positions', (req, res) => {
 
 /* ================== BACKTEST BY FILE (đặt SAU để tránh nuốt /api/paper/*) ================== */
 
-// ---- By file id (JSON/CSV) ----
 function handleByFile(req, res) {
   const kind = req.params.kind;
   if (!assertKind(kind, res)) return;
@@ -503,77 +673,50 @@ function handleByFile(req, res) {
   });
 }
 
-// /api/paper/exits[.csv] — mỗi lần thoát lệnh (partial/full)
-app.get(['/api/paper/exits', '/api/paper/exits.csv'], (req, res) => {
-  const file = path.join(PAPER_DIR, 'paper_exits.csv');
-  const rows = (function readCsvMaybe(p) {
-    if (!fs.existsSync(p)) return [];
-    const text = fs.readFileSync(p, 'utf8').trim();
-    if (!text) return [];
-    const lines = text.split(/\r?\n/);
-    if (lines.length <= 1) return [];
-    const headers = lines[0].split(',');
-    const out = [];
-    for (let i = 1; i < lines.length; i++) {
-      const parts = lines[i].split(',');
-      const obj = {};
-      for (let j = 0; j < headers.length; j++) {
-        let v = parts[j] ?? '';
-        try { v = JSON.parse(v); } catch {}
-        obj[headers[j]] = v;
-      }
-      out.push(obj);
-    }
-    return out;
-  })(file);
-
-  let r = rows;
-  const { symbol, side, label, posId, from, to, sort = 'exitTime', order = 'desc', limit, offset } = req.query;
-
-  if (symbol) r = r.filter(x => String(x.symbol||'').toUpperCase().includes(String(symbol).toUpperCase()));
-  if (side)   r = r.filter(x => String(x.side||'').toLowerCase() === String(side).toLowerCase());
-  if (label)  r = r.filter(x => String(x.label||'').toUpperCase() === String(label).toUpperCase());
-  if (posId)  r = r.filter(x => String(x.posId||'') === String(posId));
-  if (from) { const t = Date.parse(from); r = r.filter(x => Date.parse(x.exitTime||0) >= t); }
-  if (to)   { const t = Date.parse(to);   r = r.filter(x => Date.parse(x.exitTime||0) <= t); }
-
-  const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
-  r.sort((a,b) => {
-    const av = a[sort], bv = b[sort];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    if (!isNaN(av) && !isNaN(bv)) return ord * (Number(av) - Number(bv));
-    return ord * String(av).localeCompare(String(bv));
+// GET /api/rt/watch  -> view current mode & symbols
+app.get('/api/rt/watch', (req, res) => {
+  res.json({
+    mode: watch.getMode(),
+    symbols: watch.getSymbols(),
+    count: watch.getSymbols().length,
+    version: watch.getVersion(),
+    updatedAt: watch.getUpdatedAt()
   });
+});
 
-  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n|0));
-  const API_DEFAULT_LIMIT = Math.max(1, Number(process.env.API_DEFAULT_LIMIT || 100));
-  const API_MAX_LIMIT = Math.max(API_DEFAULT_LIMIT, Number(process.env.API_MAX_LIMIT || 1000));
-  const off = clamp(Number(offset||0), 0, 1e12);
-  const lim = clamp(Number(limit||API_DEFAULT_LIMIT), 1, API_MAX_LIMIT);
-  const page = r.slice(off, off + lim);
+// POST /api/rt/watch
+// Body: { action: "set"|"add"|"remove"|"clear", symbols: string|string[], mode?: "auto"|"manual"|"mix" }
+const watch = require('./rt_watch_store');
 
-  const wantsCsv = () => {
-    const q = String(req.query.format || '').toLowerCase();
-    const accept = (req.headers['accept'] || '').toLowerCase();
-    return q === 'csv' || accept.includes('text/csv') || req.path.endsWith('.csv');
-  };
+app.post('/api/rt/watch', (req, res) => {
+  try {
+    const { action = 'add', symbols = [], mode } = req.body || {};
+    if (mode) watch.setMode(mode);
 
-  const toCsv = (rows) => {
-    if (!rows.length) return '\n';
-    const keys = Object.keys(rows[0]);
-    const lines = [keys.join(',')];
-    for (const row of rows) lines.push(keys.map(k => JSON.stringify(row[k] ?? '')).join(','));
-    return lines.join('\n') + '\n';
-  };
+    const list = Array.isArray(symbols)
+      ? symbols
+      : (typeof symbols === 'string' ? symbols.split(/[,\s]+/) : []);
 
-  if (wantsCsv()) {
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename=paper_exits.csv');
-    return res.send(toCsv(page));
+    switch (String(action).toLowerCase()) {
+      case 'set':    watch.setSymbols(list); break;
+      case 'add':    watch.addSymbols(list); break;
+      case 'remove': watch.removeSymbols(list); break;
+      case 'clear':  watch.clearSymbols();    break;
+      default:
+        return res.status(400).json({ error: 'Invalid action. Use set|add|remove|clear' });
+    }
+
+    res.json({
+      ok: true,
+      mode: watch.getMode(),
+      symbols: watch.getSymbols(),
+      count: watch.getSymbols().length,
+      version: watch.getVersion(),
+      updatedAt: watch.getUpdatedAt()
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
-  res.json({ kind: 'paper_exits', total: r.length, limit: lim, offset: off, data: page });
 });
 
 app.get('/api/:file/:kind', handleByFile);

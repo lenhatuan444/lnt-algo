@@ -1,61 +1,76 @@
+// src/config.js
 require('dotenv').config();
 
-function toBool(v, def=false) {
-  if (v === undefined) return def;
-  if (typeof v === 'boolean') return v;
-  const s = String(v).toLowerCase();
-  return ['1','true','yes','y','on'].includes(s);
-}
-function toNum(v, def=0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : def;
+function parseList(str, sep = ',') {
+  return String(str || '')
+    .split(sep)
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 
 const env = {
-  EXCHANGE_ID: process.env.EXCHANGE_ID || 'binanceusdm',
-  API_KEY: process.env.API_KEY || '',
-  API_SECRET: process.env.API_SECRET || '',
+  // ===== MongoDB =====
+  MONGO_ENABLE: String(process.env.MONGO_ENABLE || '0') === '1',
+  MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017',
+  MONGO_DB: process.env.MONGO_DB || 'lnt_algo',
+  MONGO_COLL_ENTRIES: process.env.MONGO_COLL_ENTRIES || 'paper_entries',
+  MONGO_COLL_EXITS: process.env.MONGO_COLL_EXITS || 'paper_exits',
+  MONGO_COLL_TRADES: process.env.MONGO_COLL_TRADES || 'paper_trades',
+  MONGO_COLL_EQUITY: process.env.MONGO_COLL_EQUITY || 'paper_equity',
+  MONGO_COLL_POSITIONS: process.env.MONGO_COLL_POSITIONS || 'paper_positions',
+  MONGO_COLL_STATE: process.env.MONGO_COLL_STATE || 'bot_state',
 
+  // General
+  EXCHANGE_ID: process.env.EXCHANGE_ID || 'binanceusdm',
+  QUOTE: process.env.QUOTE || 'USDT',
   TIMEFRAME: process.env.TIMEFRAME || '4h',
-  CRON_EXPRESSION: process.env.CRON_EXPRESSION || '0 */4 * * *',
+  CRON_EXPRESSION: process.env.CRON_EXPRESSION || '5 */4 * * *', // 4h+5m
   CRON_TZ: process.env.CRON_TZ || 'UTC',
   LOG_TZ: process.env.LOG_TZ || 'Asia/Ho_Chi_Minh',
-  POST_CLOSE_DELAY_SEC: toNum(process.env.POST_CLOSE_DELAY_SEC, 45),
-  RUN_ON_START: toBool(process.env.RUN_ON_START, true),
-  LOG_JSON: toBool(process.env.LOG_JSON, false),
-  CONCURRENCY: toNum(process.env.CONCURRENCY, 6),
-  RETRIES: toNum(process.env.RETRIES, 2),
+  RUN_ON_START: String(process.env.RUN_ON_START || '1') === '1',
+  POST_CLOSE_DELAY_SEC: Number(process.env.POST_CLOSE_DELAY_SEC || 5),
 
-  AUTOPICK_TOP: toNum(process.env.AUTOPICK_TOP, 10),
-  QUOTE: process.env.QUOTE || 'USDT',
-  SYMBOLS: process.env.SYMBOLS || 'BTC/USDT,ETH/USDT,SOL/USDT',
+  // Trading settings
+  TRADE_ENABLED: String(process.env.TRADE_ENABLED || 'false').toLowerCase() === 'true',
+  LEVERAGE: Number(process.env.LEVERAGE || 2),
+  RISK_PCT: Number(process.env.RISK_PCT || 1),
+  SLIPPAGE_BPS: Number(process.env.SLIPPAGE_BPS || 0),
+  EQUITY: Number(process.env.EQUITY || 10000),
 
-  TRADE_ENABLED: toBool(process.env.TRADE_ENABLED, false),
-  LEVERAGE: toNum(process.env.LEVERAGE, 5),
-  RISK_PCT: toNum(process.env.RISK_PCT, 1) / 100,
+  // Concurrency / retry
+  CONCURRENCY: Math.max(1, Number(process.env.CONCURRENCY || 4)),
+  RETRIES: Math.max(0, Number(process.env.RETRIES || 2)),
 
-  DAILY_EMA: toNum(process.env.DAILY_EMA, 12),
-  ATR_LEN: toNum(process.env.ATR_LEN, 14),
-  ATR_MULT: toNum(process.env.ATR_MULT, 1.5),
-  MACD_FAST: toNum(process.env.MACD_FAST, 12),
-  MACD_SLOW: toNum(process.env.MACD_SLOW, 26),
-  MACD_SIGNAL: toNum(process.env.MACD_SIGNAL, 9),
-  VOL_LEN: toNum(process.env.VOL_LEN, 20),
-  VOL_RATIO: toNum(process.env.VOL_RATIO, 1.2),
-  TP1_RR: toNum(process.env.TP1_RR, 1.5),
-  TP2_RR: toNum(process.env.TP2_RR, 3.0),
+  // Autopick
+  AUTOPICK_TOP: Number(process.env.AUTOPICK_TOP || 0),
 
-  EQUITY: toNum(process.env.EQUITY, 10000),
-  SLIPPAGE_BPS: toNum(process.env.SLIPPAGE_BPS, 5),
+  // Logging
+  LOG_JSON: String(process.env.LOG_JSON || '0') === '1',
 
-  // API server config
-  API_PORT: toNum(process.env.API_PORT, 8080),
-  BACKTEST_DIR: process.env.BACKTEST_DIR || 'backtest_outputs',
+  // API
+  API_PORT: Number(process.env.API_PORT || 8080),
+  BACKTEST_DIR: process.env.BACKTEST_DIR,
   CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
-  API_DEFAULT_LIMIT: toNum(process.env.API_DEFAULT_LIMIT, 100),
-  API_MAX_LIMIT: toNum(process.env.API_MAX_LIMIT, 1000),
+  API_DEFAULT_LIMIT: Number(process.env.API_DEFAULT_LIMIT || 100),
+  API_MAX_LIMIT: Number(process.env.API_MAX_LIMIT || 1000),
+
+  // Strategy selection
+  STRATEGY: process.env.STRATEGY || 'default',
+  DONCHIAN_LEN: Number(process.env.DONCHIAN_LEN || 55),
+  ATR_LEN: Number(process.env.ATR_LEN || 14),
+  ATR_MULT: Number(process.env.ATR_MULT || 2),
+  TP1_RR: Number(process.env.TP1_RR || 1),
+  TP2_RR: Number(process.env.TP2_RR || 2),
+
+  // Real-time paper exits
+  PAPER_REALTIME: Number(process.env.PAPER_REALTIME || 0),
+  RT_POLL_MS: Math.max(200, Number(process.env.RT_POLL_MS || 1000)),
+
+  // Keys (optional for live)
+  API_KEY: process.env.API_KEY,
+  API_SECRET: process.env.API_SECRET,
 };
 
-const SYMBOLS_ARR = env.SYMBOLS.split(',').map(s => s.trim()).filter(Boolean);
+const SYMBOLS_ARR = parseList(process.env.SYMBOLS || 'BTC/USDT,ETH/USDT,SOL/USDT');
 
 module.exports = { env, SYMBOLS_ARR };

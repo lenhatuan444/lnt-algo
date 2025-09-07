@@ -3,7 +3,6 @@ const cron = require('node-cron');
 const ccxt = require('ccxt');
 const { env, SYMBOLS_ARR } = require('./config');
 const { processSymbol } = require('./bot');
-const { normalizeSymbolList } = require('./market_utils');
 
 function sleep(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
@@ -34,8 +33,9 @@ async function withRetry(fn, { retries = env.RETRIES, base = 250 } = {}) {
   let attempt = 0;
   const jitter = () => Math.floor(Math.random() * 100);
   while (true) {
-    try { return await fn(); }
-    catch (e) {
+    try {
+      return await fn();
+    } catch (e) {
       if (attempt >= retries) throw e;
       const wait = base * (2 ** attempt) + jitter();
       await sleep(wait);
@@ -45,24 +45,20 @@ async function withRetry(fn, { retries = env.RETRIES, base = 250 } = {}) {
 }
 
 async function pickTopSymbols(exchange, count, { quote = 'USDT' } = {}) {
-  let tickers = {};
-  try { tickers = await exchange.fetchTickers(); } catch (_) {}
-  const markets = exchange.markets || {};
+  const tickers = await exchange.fetchTickers();
+  return Object.entries(tickers)
+    .filter(([sym, t]) => sym.endsWith(`/${quote}`) && t && typeof t.quoteVolume === 'number')
+    .sort((a, b) => b[1].quoteVolume - a[1].quoteVolume)
+    .slice(0, count)
+    .map(([sym]) => sym);
+}
 
-  const candidates = Object.values(markets).filter(m => {
-    const okQuote = (m.quote === quote) || (m.settle === quote);
-    return m.active !== false && okQuote && (m.swap || m.contract);
-  });
-
-  const withVol = candidates.map(m => {
-    const t = tickers[m.symbol];
-    const vol = (t && typeof t.quoteVolume === 'number') ? t.quoteVolume : 0;
-    return { symbol: m.symbol, vol };
-  });
-
-  withVol.sort((a,b) => b.vol - a.vol);
-  const top = (withVol.length ? withVol : candidates.map(m => ({symbol:m.symbol, vol:0}))).slice(0, count);
-  return top.map(x => x.symbol);
+// ---- helpers ----
+function fmtReason(reason) {
+  if (Array.isArray(reason)) return reason.join('|');
+  if (reason == null) return '';
+  if (typeof reason === 'string') return reason;
+  try { return JSON.stringify(reason); } catch { return String(reason); }
 }
 
 async function runJob() {
@@ -93,102 +89,42 @@ async function runJob() {
       try {
         symbols = await pickTopSymbols(exchange, env.AUTOPICK_TOP, { quote: env.QUOTE });
         if (!symbols.length) throw new Error('auto-pick empty');
-        if (!env.LOG_JSON) console.log(
-          `[${tzStamp()}] Auto-pick top ${symbols.length} by volume: ${symbols.join(', ')}`
-        );
+        if (!env.LOG_JSON) console.log(`[${tzStamp()}] Auto-pick top ${symbols.length} by volume: ${symbols.join(', ')}`);
       } catch (e) {
         console.error(`[${tzStamp()}] Auto-pick lỗi (${e.message}), fallback dùng SYMBOLS từ .env.`);
         symbols = SYMBOLS_ARR;
       }
     }
 
-    const normSymbols = normalizeSymbolList(exchange, symbols);
-    for (let i = 0; i < symbols.length; i++) {
-      if (symbols[i] !== normSymbols[i] && !env.LOG_JSON) {
-        console.log(`[${tzStamp()}] Map ${symbols[i]} -> ${normSymbols[i] || 'UNRESOLVED'}`);
-      }
-    }
-
     const limit = pLimit(env.CONCURRENCY);
-    const jobs = normSymbols.map((symbol) =>
+    const jobs = symbols.map((symbol) =>
       limit(() =>
         withRetry(() => processSymbol(exchange, symbol))
           .then((r) => {
-            const sym = r.symbol || symbol;
-
             if (env.LOG_JSON) {
-              // JSON logs (structured)
-              if (r.placed) {
-                console.log(JSON.stringify({ level: 'info', type: 'live_order', ...r }));
-                return;
-              }
-              if (r.paperEntry) {
-                console.log(JSON.stringify({
-                  level: 'info', type: 'paper_entry',
-                  symbol: sym, side: r.side, qty: r.qty, entry: r.entry,
-                  entryExec: r.entryExec, stop: r.stop, tp1: r.tp1, tp2: r.tp2,
-                  equity: r.equity, reason: r.reason
-                }));
-              }
-              if (Array.isArray(r.paperExits) && r.paperExits.length) {
-                for (const ev of r.paperExits) {
-                  console.log(JSON.stringify({
-                    level: 'info', type: 'paper_exit',
-                    symbol: sym, label: ev.label,
-                    fraction: ev.fraction, price: ev.price,
-                    when: ev.when, equity: r.equity
-                  }));
-                }
-              }
-              if (!r.paperEntry && !(r.paperExits && r.paperExits.length)) {
-                console.log(JSON.stringify({ level: 'info', type: 'simulated', ...r }));
-              }
+              // structured logs: keep payload as-is
+              console.log(JSON.stringify({ level: 'info', symbol, ...r }));
+              return;
+            }
+
+            const reasonText = fmtReason(r?.reason);
+
+            if (r?.placed) {
+              console.log(
+                `[${tzStamp()}] ✅ ${symbol} ${r.side?.toUpperCase()} `
+                + `qty=${r.qty} @~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
+                + `(${reasonText})`
+              );
+            } else if (r?.simulated && r?.side) {
+              console.log(
+                `[${tzStamp()}] 🔎 ${symbol} signal ${r.side?.toUpperCase()} `
+                + `qty=${r.qty} entry~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
+                + `(${reasonText})`
+              );
+            } else if (r?.simulated) {
+              console.log(`[${tzStamp()}] – ${symbol} simulated: ${reasonText}`);
             } else {
-              // Human-readable logs
-              if (r.placed) {
-                console.log(
-                  `[${tzStamp()}] ✅ ${sym} ${r.side?.toUpperCase()} `
-                  + `qty=${r.qty} @~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
-                  + `(${(r.reason||[]).join('|')})`
-                );
-                return;
-              }
-
-              // 🧪 PAPER ENTRY
-              if (r.paperEntry) {
-                console.log(
-                  `[${tzStamp()}] 🧪 PAPER ENTRY ${sym} ${r.side?.toUpperCase()} `
-                  + `qty=${r.qty} @plan=${r.entry} exec~${r.entryExec} `
-                  + `SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} | eq=${r.equity} `
-                  + `(${(r.reason||[]).join('|')})`
-                );
-              }
-
-              // 🧪 PAPER EXIT (may contain multiple events in the same bar)
-              if (Array.isArray(r.paperExits) && r.paperExits.length) {
-                for (const ev of r.paperExits) {
-                  const fracPct = Math.round((ev.fraction ?? 0) * 100);
-                  console.log(
-                    `[${tzStamp()}] 🧪 PAPER EXIT  ${sym} ${ev.label} `
-                    + `frac=${fracPct}% px=${ev.price} at=${ev.when} | eq=${r.equity}`
-                  );
-                }
-              }
-
-              // Fallback: simulated/no-signal formatting
-              if (!r.paperEntry && !(r.paperExits && r.paperExits.length)) {
-                if (r.simulated && r.side) {
-                  console.log(
-                    `[${tzStamp()}] 🔎 ${sym} signal ${r.side?.toUpperCase()} `
-                    + `qty=${r.qty} entry~${r.entry} SL ${r.stop} TP1 ${r.tp1} TP2 ${r.tp2} `
-                    + `(${(r.reason||[]).join('|')}) | eq=${r.equity}`
-                  );
-                } else if (r.simulated) {
-                  console.log(`[${tzStamp()}] – ${sym} simulated: ${r.reason} | eq=${r.equity}`);
-                } else {
-                  console.log(`[${tzStamp()}] – ${sym} skip: ${r.reason}`);
-                }
-              }
+              console.log(`[${tzStamp()}] – ${symbol} skip: ${reasonText}`);
             }
           })
           .catch(e => console.error(`[${tzStamp()}] ${symbol} error:`, e.message))

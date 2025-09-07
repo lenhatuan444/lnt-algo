@@ -1,22 +1,21 @@
 {
-  "name": "crypto-4h-bot",
-  "version": "1.0.0",
-  "description": "4h crypto scanner + trading bot + backtester (EMA1D + VWAP + MACD + ATR)",
-  "type": "commonjs",
+  "name": "lnt-algo",
+  "version": "2.0.0",
+  "description": "Multi-strategy crypto 4h bot (paper & live) with API + real-time paper exits",
   "main": "src/index.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-    "scheduler": "node src/index.js",
-    "backtest": "node src/backtest.js --symbol BTC/USDT --from 2024-01-01 --to 2025-09-01 --exchange binance --timeframe 4h --equity 10000 --risk 1 --slipbps 5",
-    "api": "node src/api_server.js",
-    "all": "node src/start_all.js"
+    "start:rt": "PAPER_REALTIME=1 node src/index.js",
+    "backtest": "node src/backtest.js"
   },
   "dependencies": {
-    "ccxt": "^4.3.50",
+    "ccxt": "^4.3.80",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "node-cron": "^3.0.3",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "mongodb": "^6.8.0"
   }
 }

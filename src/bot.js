@@ -1,19 +1,26 @@
 // src/bot.js
-// Paper trading & Live trading.
-// - Paper mode: open position, realtime & bar-close exits (TP1 -> move SL to BE -> TP2 / SL / BE),
-//   log per-exit events to paper_exits.csv, and on full close log to paper_trades.csv,
-//   equity point only when fully closed.
-// - Live mode: place bracket orders (exchange handles TP/SL).
+let signalFromOHLCV;
+try {
+  const sid = String(process.env.STRATEGY || '').trim().toLowerCase();
+  if (sid && sid !== 'default') {
+    signalFromOHLCV = require(`./strategies/${sid}`).signalFromOHLCV;
+    console.log(`[strategy] Using strategy="${sid}"`);
+  } else {
+    signalFromOHLCV = require('./strategy').signalFromOHLCV;
+    console.log('[strategy] Using strategy="default" (./strategy.js)');
+  }
+} catch (e) {
+  console.warn('[strategy] Fallback to ./strategy.js due to:', e.message);
+  signalFromOHLCV = require('./strategy').signalFromOHLCV;
+}
 
-const { signalFromOHLCV } = require('./strategy');
 const {
-  setLeverage, fetchEquityUSDT, calcQty, placeBracketOrders,
-  loadState, saveState
+  setLeverage, fetchEquityUSDT, calcQty, placeBracketOrders
 } = require('./trader');
+const { loadState, saveState } = require('./state_store');
 const { env } = require('./config');
 const paperStore = require('./paper_store');
 
-/** Utils */
 async function fetchBars(exchange, symbol, timeframe, limit = 250) {
   return await exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
 }
@@ -60,7 +67,6 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       hits.push(label);
       localExits.push({ fraction, price: pxEff, label });
 
-      // log per-exit
       paperStore.addExit({
         posId: p.posId,
         symbol: p.symbol,
@@ -74,7 +80,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
         entryExec: +p.entryExec.toFixed(6),
         entryTime: p.openedAt,
         exitTime: nowISO(ts),
-        equityAfter: '', // chỉ set khi full close (ở addTrade)
+        equityAfter: '',
         slipBps: Number(env.SLIPPAGE_BPS || 0)
       });
 
@@ -85,7 +91,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       if (low <= p.stop && remainingQty > 0) exitFrac(1.0, p.stop, 'SL', 'buy');
       if (remainingQty > 0 && !p.tp1Hit && high >= p.tp1) {
         exitFrac(0.5, p.tp1, 'TP1', 'buy');
-        p.tp1Hit = true; p.stop = p.entry; // move SL to BE
+        p.tp1Hit = true; p.stop = p.entry;
       }
       if (remainingQty > 0 && p.tp1Hit) {
         if (low <= p.entry) exitFrac(1.0, p.entry, 'BE', 'buy');
@@ -107,10 +113,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
       p.qty = remainingQty;
       remainPositions.push(p);
     } else {
-      // fully closed
       paper.equity += realized;
-      closedSomething = true;
-
       const closedFrac = localExits.reduce((s, e) => s + e.fraction, 0);
       const exitAvg = closedFrac > 0
         ? localExits.reduce((s, e) => s + e.price * e.fraction, 0) / closedFrac
@@ -121,10 +124,9 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
         symbol: p.symbol, side: p.side,
         entryTime: p.openedAt, entryPrice: p.entry, entryExec: p.entryExec,
         exitTime: nowISO(ts), exitAvg: +exitAvg.toFixed(6),
-        qtyFilled: p.qtyOrig, pnl: +realized.toFixed(6), hits: hits.join('|')
+        qtyFilled: p.qtyOrig, pnl: +realized.toFixed(6), hits: localExits.map(e=>e.label).join('|')
       });
 
-      // final trade log (equityAfter set here)
       paperStore.addTrade({
         posId: p.posId,
         symbol: p.symbol,
@@ -137,7 +139,7 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
         exitAvg: +exitAvg.toFixed(6),
         qty: p.qtyOrig,
         pnl: +realized.toFixed(6),
-        hits: hits.join('|'),
+        hits: localExits.map(e=>e.label).join('|'),
         equityAfter: +paper.equity.toFixed(6),
         slipBps: Number(env.SLIPPAGE_BPS || 0)
       });
@@ -145,9 +147,6 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
   }
 
   paper.positions = remainPositions;
-  if (closedSomething) {
-    paperStore.addEquityPoint({ time: nowISO(ts), equity: +paper.equity.toFixed(6) });
-  }
   return events;
 }
 
@@ -155,7 +154,6 @@ function processPaperExits({ paper, symbol, bar, slipBps }) {
 function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
   const events = [];
   const remainPositions = [];
-  let closedSomething = false;
 
   for (const p of paper.positions) {
     if (p.symbol !== symbol) { remainPositions.push(p); continue; }
@@ -163,7 +161,6 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
     let remainingQty = p.qty;
     let realized = 0;
     const sideSign = p.side === 'buy' ? 1 : -1;
-    const hits = [];
     const localExits = [];
 
     const doExit = (fraction, pxPlan, label, pxEffSide) => {
@@ -172,7 +169,6 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
       const pnlDelta = sideSign * (pxEff - p.entryExec) * fillQty;
       realized += pnlDelta;
       remainingQty -= fillQty;
-      hits.push(label);
       localExits.push({ fraction, price: pxEff, label });
 
       paperStore.addExit({
@@ -188,7 +184,7 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
         entryExec: +p.entryExec.toFixed(6),
         entryTime: p.openedAt,
         exitTime: nowISO(ts),
-        equityAfter: '', // set tại addTrade khi close full
+        equityAfter: '',
         slipBps: Number(env.SLIPPAGE_BPS || 0)
       });
 
@@ -221,8 +217,8 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
       p.qty = remainingQty;
       remainPositions.push(p);
     } else {
+      // fully closed
       paper.equity += realized;
-      closedSomething = true;
 
       const closedFrac = localExits.reduce((s, e) => s + e.fraction, 0);
       const exitAvg = closedFrac > 0
@@ -234,13 +230,13 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
         symbol: p.symbol, side: p.side,
         entryTime: p.openedAt, entryPrice: p.entry, entryExec: p.entryExec,
         exitTime: nowISO(ts), exitAvg: +exitAvg.toFixed(6),
-        qtyFilled: p.qtyOrig, pnl: +(realized).toFixed(6), hits: localExits.map(e=>e.label).join('|')
+        qtyFilled: p.qtyOrig, pnl: +realized.toFixed(6), hits: localExits.map(e=>e.label).join('|')
       });
 
       paperStore.addTrade({
         posId: p.posId,
         symbol: p.symbol,
-        timeframe: env.TIМEFRAME || '4h',
+        timeframe: env.TIMEFRAME || '4h',
         side: p.side,
         entryTime: p.openedAt,
         entryPlan: p.entry,
@@ -257,8 +253,8 @@ function processPaperTickInternal({ paper, symbol, price, ts, slipBps }) {
   }
 
   paper.positions = remainPositions;
-  if (closedSomething) {
-    paperStore.addEquityPoint({ time: nowISO(ts), equity: +paper.equity.toFixed(6) });
+  if (events.length) {
+    // equity point only when fully closed is handled inside trade add
   }
   return events;
 }
@@ -324,34 +320,37 @@ async function processSymbol(exchange, symbol) {
   const lastClosedTs = ohlcv4h[ohlcv4h.length - 2][0];
   const lastClosedBar = ohlcv4h[ohlcv4h.length - 2];
 
-  const state = loadState();
+  const state = await loadState();
   const key = `${symbol}:${env.TIMEFRAME}`;
   if (state[key] && state[key] >= lastClosedTs) {
     return { symbol, skipped: true, reason: 'already-processed' };
   }
-  const paper = initPaper(state);
+  state[key] = lastClosedTs;
 
+  const paper = initPaper(state);
   const sig = signalFromOHLCV({ ohlcv4h, ohlcv1d }, {
     macdFast: env.MACD_FAST, macdSlow: env.MACD_SLOW, macdSignal: env.MACD_SIGNAL,
     emaDailyLen: env.DAILY_EMA, atrLen: env.ATR_LEN, atrMult: env.ATR_MULT,
     volLen: env.VOL_LEN, volRatio: env.VOL_RATIO, tp1RR: env.TP1_RR, tp2RR: env.TP2_RR,
+    donchianLen: env.DONCHIAN_LEN
   });
 
   const market = exchange.markets[symbol];
 
-  // always process bar-close exits
+  // Always evaluate bar-close exits for currently open positions
   const exits = processPaperExits({ paper, symbol, bar: lastClosedBar, slipBps: env.SLIPPAGE_BPS });
 
   if (env.TRADE_ENABLED) {
-    if (!sig.side) { state[key] = lastClosedTs; saveState(state); return { symbol, skipped: true, reason: sig.reason?.join(',') || 'no-signal' }; }
+    // Live: place bracket
+    if (!sig.side) { await saveState(state); return { symbol, skipped: true, reason: sig.reason?.join(',') || 'no-signal' }; }
     const equity = await fetchEquityUSDT(exchange);
     const qty = calcQty({ riskPct: env.RISK_PCT, equityUSDT: equity, entry: sig.entry, stop: sig.stop, market });
-    if (!qty || qty <= 0) { state[key] = lastClosedTs; saveState(state); return { symbol, skipped: true, reason: 'qty-zero', plan: sig }; }
+    if (!qty || qty <= 0) { await saveState(state); return { symbol, skipped: true, reason: 'qty-zero', plan: sig }; }
 
     await setLeverage(exchange, symbol, env.LEVERAGE);
     const entryOrder = await placeBracketOrders(exchange, symbol, sig.side, qty, sig.entry, sig.stop, sig.tp1, sig.tp2);
 
-    state[key] = lastClosedTs; saveState(state);
+    await saveState(state);
     return {
       symbol, placed: true, side: sig.side, qty,
       entry: sig.entry, stop: sig.stop, tp1: sig.tp1, tp2: sig.tp2,
@@ -365,7 +364,7 @@ async function processSymbol(exchange, symbol) {
       });
     }
 
-    state[key] = lastClosedTs; saveState(state);
+    await saveState(state);
 
     if (openRes?.opened) {
       return { symbol, simulated: true, paperEntry: true, equity: +paper.equity.toFixed(6), ...openRes };
@@ -381,12 +380,12 @@ async function processSymbol(exchange, symbol) {
   }
 }
 
-/** ======== Realtime hook used by realtime_paper.js ======== */
+/** ======== Realtime hook ======== */
 async function processRealtimeTick(symbol, price, ts = Date.now()) {
-  const state = loadState();
+  const state = await loadState();
   const paper = initPaper(state);
   const events = processPaperTickInternal({ paper, symbol, price, ts, slipBps: env.SLIPPAGE_BPS });
-  saveState(state);
+  await saveState(state);
   return { symbol, paperExits: events, equity: +paper.equity.toFixed(6) };
 }
 
