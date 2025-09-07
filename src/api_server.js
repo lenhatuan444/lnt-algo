@@ -502,6 +502,80 @@ function handleByFile(req, res) {
     pagination: { defaultLimit: API_DEFAULT_LIMIT, maxLimit: API_MAX_LIMIT }
   });
 }
+
+// /api/paper/exits[.csv] — mỗi lần thoát lệnh (partial/full)
+app.get(['/api/paper/exits', '/api/paper/exits.csv'], (req, res) => {
+  const file = path.join(PAPER_DIR, 'paper_exits.csv');
+  const rows = (function readCsvMaybe(p) {
+    if (!fs.existsSync(p)) return [];
+    const text = fs.readFileSync(p, 'utf8').trim();
+    if (!text) return [];
+    const lines = text.split(/\r?\n/);
+    if (lines.length <= 1) return [];
+    const headers = lines[0].split(',');
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        let v = parts[j] ?? '';
+        try { v = JSON.parse(v); } catch {}
+        obj[headers[j]] = v;
+      }
+      out.push(obj);
+    }
+    return out;
+  })(file);
+
+  let r = rows;
+  const { symbol, side, label, posId, from, to, sort = 'exitTime', order = 'desc', limit, offset } = req.query;
+
+  if (symbol) r = r.filter(x => String(x.symbol||'').toUpperCase().includes(String(symbol).toUpperCase()));
+  if (side)   r = r.filter(x => String(x.side||'').toLowerCase() === String(side).toLowerCase());
+  if (label)  r = r.filter(x => String(x.label||'').toUpperCase() === String(label).toUpperCase());
+  if (posId)  r = r.filter(x => String(x.posId||'') === String(posId));
+  if (from) { const t = Date.parse(from); r = r.filter(x => Date.parse(x.exitTime||0) >= t); }
+  if (to)   { const t = Date.parse(to);   r = r.filter(x => Date.parse(x.exitTime||0) <= t); }
+
+  const ord = (String(order).toLowerCase() === 'asc') ? 1 : -1;
+  r.sort((a,b) => {
+    const av = a[sort], bv = b[sort];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (!isNaN(av) && !isNaN(bv)) return ord * (Number(av) - Number(bv));
+    return ord * String(av).localeCompare(String(bv));
+  });
+
+  const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n|0));
+  const API_DEFAULT_LIMIT = Math.max(1, Number(process.env.API_DEFAULT_LIMIT || 100));
+  const API_MAX_LIMIT = Math.max(API_DEFAULT_LIMIT, Number(process.env.API_MAX_LIMIT || 1000));
+  const off = clamp(Number(offset||0), 0, 1e12);
+  const lim = clamp(Number(limit||API_DEFAULT_LIMIT), 1, API_MAX_LIMIT);
+  const page = r.slice(off, off + lim);
+
+  const wantsCsv = () => {
+    const q = String(req.query.format || '').toLowerCase();
+    const accept = (req.headers['accept'] || '').toLowerCase();
+    return q === 'csv' || accept.includes('text/csv') || req.path.endsWith('.csv');
+  };
+
+  const toCsv = (rows) => {
+    if (!rows.length) return '\n';
+    const keys = Object.keys(rows[0]);
+    const lines = [keys.join(',')];
+    for (const row of rows) lines.push(keys.map(k => JSON.stringify(row[k] ?? '')).join(','));
+    return lines.join('\n') + '\n';
+  };
+
+  if (wantsCsv()) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename=paper_exits.csv');
+    return res.send(toCsv(page));
+  }
+  res.json({ kind: 'paper_exits', total: r.length, limit: lim, offset: off, data: page });
+});
+
 app.get('/api/:file/:kind', handleByFile);
 app.get('/api/:file/:kind.csv', handleByFile);
 
