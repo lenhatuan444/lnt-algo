@@ -53,7 +53,7 @@ async function addEntry(open) {
   appendCSV('paper_entries.csv', doc, [
     'posId','symbol','timeframe','side',
     'entryTime','entryTs','entryPlan','entryExec','qty',
-    'equityBefore','slipBps','reason'
+    'equityBefore','slipBps','paperUseLeverage','leverage','reason'
   ]);
 
   if (env.MONGO_ENABLE && mongo) {
