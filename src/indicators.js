@@ -70,4 +70,29 @@ function dailyVWAP(ohlcv) {
   return out;
 }
 
-module.exports = { ema, sma, macd, atr, dailyVWAP };
+
+function rsi(values, period = 14) {
+  const out = new Array(values.length).fill(null);
+  if (!Array.isArray(values) || values.length === 0) return out;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period && i < values.length; i++) {
+    const ch = values[i] - values[i - 1];
+    gains += ch > 0 ? ch : 0;
+    losses += ch < 0 ? (-ch) : 0;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const ch = values[i] - values[i - 1];
+    const gain = ch > 0 ? ch : 0;
+    const loss = ch < 0 ? (-ch) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    const rs = avgLoss === 0 ? (avgGain === 0 ? 0 : 1000) : (avgGain / avgLoss);
+    const rsi = 100 - (100 / (1 + rs));
+    out[i] = rsi;
+  }
+  return out;
+}
+
+module.exports = { ema, sma, macd, atr, dailyVWAP, rsi };
