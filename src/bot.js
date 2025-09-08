@@ -370,13 +370,15 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
     equityUSDT: paper.equity,
     entry: sig.entry, stop: sig.stop, market,
     includeLeverage: !!env.PAPER_USE_LEVERAGE,
-    leverage: env.LEVERAGE
+    leverage: (sig.leverage ?? env.LEVERAGE)
   });
   if (!qty || qty <= 0) return { skipped: true, reason: 'qty-zero', plan: sig };
 
   const entryExec = applySlip(sig.entry, sig.side, slipBps, { forEntry: true });
   const posId = genPosId(symbol);
   const pos = {
+    leverage: (sig.leverage ?? env.LEVERAGE),
+    paperUseLeverage: !!env.PAPER_USE_LEVERAGE,
     posId,
     symbol,
     side: sig.side,
@@ -411,7 +413,7 @@ function maybeOpenPaper({ paper, symbol, sig, market, riskPct, slipBps }) {
       equityBefore: +paper.equity.toFixed(6),
       slipBps: Number(env.SLIPPAGE_BPS || 0),
       paperUseLeverage: Number(env.PAPER_USE_LEVERAGE || 0),
-      leverage: Number(env.LEVERAGE || 1),
+      leverage: Number((sig.leverage ?? env.LEVERAGE) || 1),
       reason: Array.isArray(sig.reason) ? sig.reason.join('|') : (sig.reason || '')
     });
 
@@ -467,7 +469,7 @@ async function processSymbol(exchange, symbol) {
     // Live: place bracket
     if (!sig.side) { await saveState(state); return { symbol, skipped: true, reason: Array.isArray(sig.reason) ? sig.reason : (sig.reason ? [sig.reason] : []) }; }
     const equity = await fetchEquityUSDT(exchange);
-    const qty = calcQty({ riskPct: env.RISK_PCT, equityUSDT: equity, entry: sig.entry, stop: sig.stop, market, includeLeverage: false, leverage: env.LEVERAGE });
+    const qty = calcQty({ riskPct: env.RISK_PCT, equityUSDT: equity, entry: sig.entry, stop: sig.stop, market, includeLeverage: false, leverage: (sig.leverage ?? env.LEVERAGE) });
     if (!qty || qty <= 0) { await saveState(state); return { symbol, skipped: true, reason: ['qty-zero'], plan: sig }; }
 
     await setLeverage(exchange, symbol, env.LEVERAGE);

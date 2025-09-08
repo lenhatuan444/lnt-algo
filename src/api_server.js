@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
 const { env } = require('./config');
+const paperStore = require('./paper_store');
 
 const app = express();
 
@@ -723,6 +724,18 @@ app.get('/api/:file/:kind', handleByFile);
 app.get('/api/:file/:kind.csv', handleByFile);
 
 // ===== Start =====
+
+// ---- Export paper equity to XLSX ----
+app.post('/api/export/paper-xlsx', async (req, res) => {
+  try {
+    const base = (req.body && req.body.base) || req.query.base || process.env.PAPER_XLSX_BASENAME || env.PAPER_XLSX_BASENAME || 'paper';
+    const out = await paperStore.exportPaperXlsx(base);
+    if (!out) return res.status(500).json({ ok: 0, error: 'export-failed' });
+    res.json({ ok: 1, path: out });
+  } catch (e) {
+    res.status(500).json({ ok: 0, error: e.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`[api] listening on :${PORT} | DATA_DIR=${DATA_DIR} | PAPER_DIR=${PAPER_DIR} | defaultLimit=${API_DEFAULT_LIMIT} maxLimit=${API_MAX_LIMIT}`);
 });

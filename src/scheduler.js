@@ -127,7 +127,7 @@ async function runJob() {
               console.log(`[${tzStamp()}] – ${symbol} skip: ${reasonText}`);
             }
           })
-          .catch(e => console.error(`[${tzStamp()}] ${symbol} error:`, e.message))
+          // .catch(e => console.error(`[${tzStamp()}] ${symbol} error:`, e.message))
       )
     );
 

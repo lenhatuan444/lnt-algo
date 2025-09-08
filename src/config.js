@@ -33,9 +33,11 @@ const env = {
   // Trading settings
   TRADE_ENABLED: String(process.env.TRADE_ENABLED || 'false').toLowerCase() === 'true',
   LEVERAGE: Number(process.env.LEVERAGE || 2),
+  PAPER_USE_LEVERAGE: Number(process.env.PAPER_USE_LEVERAGE || 0),
   RISK_PCT: Number(process.env.RISK_PCT || 1),
   SLIPPAGE_BPS: Number(process.env.SLIPPAGE_BPS || 0),
   EQUITY: Number(process.env.EQUITY || 10000),
+  EQUITY_CCY: process.env.EQUITY_CCY || 'USDT',
 
   // Concurrency / retry
   CONCURRENCY: Math.max(1, Number(process.env.CONCURRENCY || 4)),
@@ -56,6 +58,12 @@ const env = {
 
   // Strategy selection
   STRATEGY: process.env.STRATEGY || 'default',
+  BB_PERIOD: Number(process.env.BB_PERIOD || 20),
+  BB_STDDEV: Number(process.env.BB_STDDEV || 2),
+  RSI_LEN: Number(process.env.RSI_LEN || 14),
+  RSI_OVERSOLD: Number(process.env.RSI_OVERSOLD || 30),
+  RSI_OVERBOUGHT: Number(process.env.RSI_OVERBOUGHT || 70),
+  MR_TP_RR: Number(process.env.MR_TP_RR || 1.0),
   DONCHIAN_LEN: Number(process.env.DONCHIAN_LEN || 55),
   ATR_LEN: Number(process.env.ATR_LEN || 14),
   ATR_MULT: Number(process.env.ATR_MULT || 2),
@@ -83,6 +91,10 @@ const env = {
 
   // Real-time paper exits
   PAPER_REALTIME: Number(process.env.PAPER_REALTIME || 0),
+  PAPER_XLSX_AUTO: Number(process.env.PAPER_XLSX_AUTO || 0),
+  PAPER_XLSX_EXPORT_INTERVAL_MS: Number(process.env.PAPER_XLSX_EXPORT_INTERVAL_MS || 60000),
+  PAPER_XLSX_BASENAME: process.env.PAPER_XLSX_BASENAME || 'paper',
+  PAPER_XLSX_SNAPSHOTS: Number(process.env.PAPER_XLSX_SNAPSHOTS || 0),
   RT_POLL_MS: Math.max(200, Number(process.env.RT_POLL_MS || 1000)),
 
   // Keys (optional for live)
