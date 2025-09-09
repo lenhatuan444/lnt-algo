@@ -1,21 +1,21 @@
 {
-  "name": "lnt-algo-multi-strategy",
-  "version": "1.0.0",
+  "name": "paper-bot-src",
+  "private": true,
+  "version": "1.0.1",
   "type": "commonjs",
-  "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "start:api": "node src/api_server.js",
-    "start:scheduler": "node src/scheduler.js",
-    "start:rt": "node -e \"require('./src/realtime_paper').startRealtimePaperWatcher()\""
+    "scan:macd:4h": "node src/scan_macd_4h.js",
+    "start:tpwatch": "node src/rt_tp_closer.js",
+    "start:slwatch": "node src/rt_sl_postclose.js",
+    "start:orders:api": "node src/paper_orders_server.js",
+    "start:all": "node src/run_all.js"
   },
   "dependencies": {
-    "ccxt": "^4.3.81",
-    "cors": "^2.8.5",
+    "ccxt": "^4.4.3",
     "dotenv": "^16.4.5",
-    "express": "^5.1.0",
-    "mongodb": "^6.7.0",
-    "node-cron": "^3.0.3",
-    "xlsx": "^0.18.5"
+    "express": "^4.19.2",
+    "mongodb": "^6.6.2",
+    "technicalindicators": "^3.1.0",
+    "cors": "^2.8.5"
   }
 }
